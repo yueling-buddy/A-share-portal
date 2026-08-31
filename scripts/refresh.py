@@ -60,6 +60,7 @@ MCAP_CSV = DATA_DIR / "mcap.csv"
 RPS_JSON = DATA_DIR / "rps.json"
 FIP_JSON = DATA_DIR / "fip.json"
 META_JSON = DATA_DIR / "meta.json"
+SECTOR_JSON = DATA_DIR / "sector_rps.json"
 INDEX_HTML = ROOT / "index.html"
 ERROR_LOG = DATA_DIR / "error.log"
 KLINE_CACHE = DATA_DIR / "kline_cache.parquet"         # 运行时缓存（盘中用）
@@ -317,6 +318,143 @@ def compute_all(frames: dict, names: dict, industry_map, mcap_map, watch_codes):
     return records, latest
 
 
+# ---------------- 板块（行业）RPS 聚合 ----------------
+SECTOR_MIN_STOCKS = 3                              # 行业内至少多少只股票才参与排名（防单票噪声）
+RET_COLS = {                                       # 板块收益窗口：股票 ret 列 -> 展示标签
+    # 与个股 RPS 完全平行的窗口（用于板块 RPS 横截面排名）
+    "ret50": "50D", "ret120": "120D", "ret250": "250D",
+    # 展示用区间收益（市值加权板块收益，对齐美股选股盘板块面板）
+    "ret1w": "1W", "ret1m": "1M", "ret3m": "3M", "ret6m": "6M", "ret_ytd": "YTD", "ret1y": "1Y",
+}
+SECTOR_WIN = (50, 120, 250)                         # 板块 RPS 窗口，与个股 RPS 口径一致
+
+
+def compute_sector(records, asof):
+    """从个股 records 聚合出板块（行业）RPS。
+
+    两类口径并存：
+      - 板块 RPS（市值加权）= 各行业「市值加权收益」在全部行业中的横截面百分位 ×100，
+                            与个股 RPS 定义完全平行（=美股选股盘"市值加权板块收益"的 RPS 版）。
+      - 板块 RPS（等权）  = 各行业「等权收益」的百分位，作为对照。
+    同时输出行业成分股数、市值加权/等权区间收益、平均个股 RPS、强势股数、领涨股等。
+    返回 (sector_records, asof)；无有效行业时返回 ([], asof)。
+    """
+    if not records:
+        return [], asof
+    df = pd.DataFrame(records)
+    df = df[df["industry"].notna() & (df["industry"].astype(str).str.len() > 0)].copy()
+    if df.empty:
+        return [], asof
+    for c in ["composite_rps", "rps50", "rps120", "rps250", "market_cap_yi"] + list(RET_COLS):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    counts = df.groupby("industry")["code"].count()
+    valid_inds = counts[counts >= SECTOR_MIN_STOCKS].index
+    df = df[df["industry"].isin(valid_inds)].copy()
+    if df.empty:
+        log_err(f"板块聚合：无行业满足 >= {SECTOR_MIN_STOCKS} 只成分股")
+        return [], asof
+
+    rows = []
+    for ind, g in df.groupby("industry"):
+        n = len(g)
+        mc = pd.to_numeric(g["market_cap_yi"], errors="coerce").fillna(0.0)
+        tot_mc = float(mc.sum())
+        w = (mc / tot_mc) if tot_mc > 0 else None
+
+        # 区间收益：市值加权 vs 等权
+        ew_ret, cw_ret = {}, {}
+        for k in RET_COLS:
+            ew_ret[k] = float(g[k].mean(skipna=True)) if g[k].notna().any() else np.nan
+            if w is not None and tot_mc > 0:
+                cw_ret[k] = float((g[k].fillna(0.0) * w).sum())
+            else:
+                cw_ret[k] = ew_ret[k]
+        # 个股 RPS 的均值（市值加权 vs 等权）：反映"板块内个股平均强度"
+        ew_rps, cw_rps = {}, {}
+        for s in SECTOR_WIN:
+            c = f"rps{s}"
+            ew_rps[s] = float(g[c].mean(skipna=True)) if g[c].notna().any() else np.nan
+            if w is not None and tot_mc > 0:
+                cw_rps[s] = float((g[c].fillna(0.0) * w).sum())
+            else:
+                cw_rps[s] = ew_rps[s]
+
+        avg_comp = float(g["composite_rps"].mean(skipna=True)) if g["composite_rps"].notna().any() else np.nan
+        n_strong = int((g["composite_rps"] >= 90).sum())
+        top = g.sort_values("composite_rps", ascending=False, na_position="last").iloc[0]
+        rows.append({
+            "industry": ind,
+            "n_stocks": int(n),
+            "total_mcap_yi": tot_mc if tot_mc > 0 else None,
+            "avg_mcap_yi": float(mc.mean()) if n > 0 else None,
+            # 板块 RPS（市值加权）：个股 RPS 的市值加权均值
+            "cw_rps50": cw_rps[50], "cw_rps120": cw_rps[120], "cw_rps250": cw_rps[250],
+            "cw_composite_rps": 0.3 * cw_rps[50] + 0.3 * cw_rps[120] + 0.4 * cw_rps[250],
+            # 板块 RPS（等权）：个股 RPS 的等权均值
+            "ew_rps50": ew_rps[50], "ew_rps120": ew_rps[120], "ew_rps250": ew_rps[250],
+            "ew_composite_rps": 0.3 * ew_rps[50] + 0.3 * ew_rps[120] + 0.4 * ew_rps[250],
+            # 板块区间收益（市值加权 / 等权）
+            "ret50_cw": cw_ret["ret50"], "ret120_cw": cw_ret["ret120"], "ret250_cw": cw_ret["ret250"],
+            "ret1w_cw": cw_ret["ret1w"], "ret1m_cw": cw_ret["ret1m"], "ret3m_cw": cw_ret["ret3m"],
+            "ret6m_cw": cw_ret["ret6m"], "ret_ytd_cw": cw_ret["ret_ytd"], "ret1y_cw": cw_ret["ret1y"],
+            "ret50_ew": ew_ret["ret50"], "ret120_ew": ew_ret["ret120"], "ret250_ew": ew_ret["ret250"],
+            "ret1w_ew": ew_ret["ret1w"], "ret1m_ew": ew_ret["ret1m"], "ret3m_ew": ew_ret["ret3m"],
+            "ret6m_ew": ew_ret["ret6m"], "ret_ytd_ew": ew_ret["ret_ytd"], "ret1y_ew": ew_ret["ret1y"],
+            "avg_composite_rps": avg_comp,
+            "n_strong": n_strong,
+            "top_code": str(top["code"]), "top_name": str(top["name"]),
+            "top_composite_rps": None if pd.isna(top["composite_rps"]) else float(top["composite_rps"]),
+        })
+
+    sdf = pd.DataFrame(rows)
+    # 板块 RPS（横截面百分位版）：以"市值加权区间收益"在行业间排名，得到真正的相对强度排名
+    for k in RET_COLS:
+        c = k + "_cw"
+        if c in sdf.columns:
+            sdf[f"rps_{k}_cw"] = sdf[c].rank(pct=True, method="average") * 100.0
+    sdf["sector_composite_rps"] = (
+        0.3 * sdf["rps_ret50_cw"] + 0.3 * sdf["rps_ret120_cw"] + 0.4 * sdf["rps_ret250_cw"]
+    ) if {"rps_ret50_cw", "rps_ret120_cw", "rps_ret250_cw"}.issubset(sdf.columns) else np.nan
+
+    # 保留 4 位小数（RPS 类）
+    rps_cols = [c for c in sdf.columns if c.startswith(("cw_rps", "ew_rps", "rps_ret", "sector_composite_rps"))]
+    rps_cols += ["cw_composite_rps", "ew_composite_rps", "avg_composite_rps", "top_composite_rps"]
+    for c in rps_cols:
+        if c in sdf.columns:
+            sdf[c] = sdf[c].round(2)
+    ret_cols = [c for c in sdf.columns if c.endswith(("_cw", "_ew")) and c.startswith("ret")]
+    for c in ret_cols:
+        sdf[c] = sdf[c].round(2)
+    sdf = sdf.sort_values("sector_composite_rps", ascending=False, na_position="last")
+    return sdf.replace({np.nan: None}).to_dict(orient="records"), asof
+
+
+def write_sector(records, asof, source_desc):
+    if not records:
+        log_err("无板块数据可写（sector_rps.json 未生成）")
+        return
+    meta = {
+        "asof": asof,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "count": len(records),
+        "min_stocks_per_sector": SECTOR_MIN_STOCKS,
+        "source": source_desc,
+        "formula": {
+            "板块RPS_市值加权": "各行业「市值加权区间收益」在全部行业中的横截面百分位×100；综合=0.3×RPS50+0.3×RPS120+0.4×RPS250",
+            "板块RPS_等权": "各行业「等权区间收益」的百分位（对照口径）",
+            "市值加权收益": "行业内成分股按总市值加权平均的区间收益率",
+            "等权收益": "行业内成分股简单平均的区间收益率",
+        },
+    }
+    SECTOR_JSON.write_text(
+        json.dumps({"meta": meta, "data": records}, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"已生成 {SECTOR_JSON}（{len(records)} 个行业）")
+
+
 # ---------------- 数据获取 ----------------
 def fetch_universe():
     def _call():
@@ -534,6 +672,12 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
                         encoding="utf-8")
     FIP_JSON.write_text(json.dumps(fip_records, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     META_JSON.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 板块（行业）RPS 聚合
+    try:
+        sector_records, _ = compute_sector(records, asof)
+        write_sector(sector_records, asof, source_desc)
+    except Exception as e:
+        log_err(f"板块 RPS 计算失败（不影响个股数据）: {repr(e)[:200]}")
     if TEMPLATE.exists():
         html = TEMPLATE.read_text(encoding="utf-8")
         html = html.replace("__ASOF__", asof).replace("__GENERATED_AT__", meta["generated_at"])
@@ -545,7 +689,7 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["bootstrap", "intraday", "close", "full"], default="intraday")
+    ap.add_argument("--mode", choices=["bootstrap", "intraday", "close", "full", "sector-only"], default="intraday")
     ap.add_argument("--seed-local", action="store_true", help="bootstrap 时从本机 rps_fip kline 整合（秒级）")
     ap.add_argument("--limit", type=int, default=None, help="仅处理前 N 只（冒烟测试用）")
     args = ap.parse_args()
@@ -553,6 +697,22 @@ def main():
     # close 模式会写回缓存，必须基于全量 frame，禁止 --limit 截断
     if args.mode == "close":
         args.limit = None
+
+    # sector-only：直接复用已有 data/rps.json，仅重算板块 RPS（无需联网/重算个股）
+    if args.mode == "sector-only":
+        if not RPS_JSON.exists():
+            log_err(f"未找到 {RPS_JSON}，请先跑一次完整刷新（intraday/close/full）")
+            sys.exit(1)
+        try:
+            payload = json.loads(RPS_JSON.read_text(encoding="utf-8"))
+            records = payload["data"]
+            asof = payload["meta"]["asof"]
+            sector_records, _ = compute_sector(records, asof)
+            write_sector(sector_records, asof, payload["meta"].get("source", "复用 rps.json"))
+        except Exception as e:
+            log_err(f"sector-only 失败: {repr(e)[:200]}")
+            sys.exit(1)
+        sys.exit(0)
 
     print(f"== 模式: {args.mode} ==")
     industry_map, mcap_csv, watch_codes, watch_names = load_meta()
