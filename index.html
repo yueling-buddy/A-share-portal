@@ -27,6 +27,11 @@
 .metric-row .metric{padding:8px 10px}
 tr.hl{background:rgba(245,158,11,.16)!important;outline:2px solid #f59e0b}
 @media(max-width:680px){.metric-row{grid-template-columns:repeat(3,1fr)}}
+.hist-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:10px 0 4px}
+.hist-bar label{color:var(--mut);font-size:13px}
+.hist-bar select{background:var(--card);color:var(--navy);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:14px;min-width:180px}
+#historyStatus{font-size:13px;color:var(--ink);font-weight:600}
+#historyChart{width:100%;height:440px;margin-top:10px}
 </style>
 </head>
 <body>
@@ -35,6 +40,7 @@ tr.hl{background:rgba(245,158,11,.16)!important;outline:2px solid #f59e0b}
   <div class="tabs">
     <button class="tab active" data-view="stock">个股动量</button>
     <button class="tab" data-view="sector">板块RPS</button>
+    <button class="tab" data-view="history">板块历史</button>
   </div>
   <div class="kpis" id="kpis"></div>
   <section class="panel" id="stockPanel">
@@ -87,6 +93,17 @@ tr.hl{background:rgba(245,158,11,.16)!important;outline:2px solid #f59e0b}
   </section>
 </div>
 </div>
+  <div id="historyView" style="display:none">
+    <section class="panel">
+      <div class="panel-head"><span>板块历史排名走势（每日收盘定稿累积）</span><span id="historyStatus">加载数据中…</span></div>
+      <div class="hist-bar">
+        <label>行业：</label>
+        <select id="histInd" onchange="drawHistory()"></select>
+        <span class="note" id="historyNote"></span>
+      </div>
+      <div id="historyChart" class="chart"></div>
+    </section>
+  </div>
 <div class="modal" id="detailModal"><div class="modal-card"><div class="modal-head"><h2 id="detailTitle"></h2><button class="close" onclick="closeDetail()">×</button></div><div class="detail-grid" id="detailGrid"></div><div class="detail-sector" id="detailSector" style="display:none"></div><div class="charts"><div id="priceChart" class="chart"></div><div id="factorChart" class="chart"></div></div></div></div>
 <div class="modal" id="manualModal"><div class="modal-card"><div class="modal-head"><h2>指标口径与使用说明</h2><button class="close" onclick="closeManual()">×</button></div><div class="manual"><h3>RPS（横截面相对强度）</h3><p>RPS50 / 120 / 250 = 对应交易日窗口收益率在当前有效 A 股股票池中的百分位 ×100。综合RPS = <code>0.3×RPS50 + 0.3×RPS120 + 0.4×RPS250</code>。数值越高，仅表示过去对应周期相对更强。</p><h3>FIP（动量路径质量）</h3><p>FIP_N = <code>sign(N日收益) × (下跌日数−上涨日数) / N</code>。对于正收益股票，FIP 越负，代表上涨天数越多、路径相对平滑；负收益股票需结合方向理解，不能机械地只看“越负越好”。</p><h3>辅助字段</h3><p>提供 MA20/50/120/200、距均线、距前一交易日止250日最高价、量比、20日年化波动率、RSI14、周MACD柱、区间涨幅、总市值等，结构参考美股选股盘。</p><h3>数据边界</h3><p class="warn">K线为腾讯前复权日线本地缓存；总市值是缓存快照，并非历史市值。数据截至页面顶部日期，未接入实时盘中行情、财务指标与换手率（行业分类已纳入）。</p><p><b>免责声明：</b>本工具仅用于量化研究与信息筛选，不构成投资建议。</p></div></div></div>
 <script>
@@ -94,6 +111,7 @@ const COLS=[
  ['code','代码','str'],['name','名称','str'],['industry','行业','str'],['close','收盘价','num'],['composite_rps','综合RPS','rps'],['rps50','RPS50','rps'],['rps120','RPS120','rps'],['rps250','RPS250','rps'],['fip50','FIP50','fip'],['fip120','FIP120','fip'],['fip250','FIP250','fip'],['chg_pct','涨跌幅%','chg'],['dist_high_250','距250日高%','chg'],['market_cap_yi','总市值(亿)','num'],['volume_mn','成交量(M股)','num'],['amount_yi','成交额(亿)','num'],['vol_ratio20','量比','num'],['volatility20','20日波动率%','num'],['rsi14','RSI14','num'],['ma20','MA20','num'],['ma50','MA50','num'],['ma120','MA120','num'],['ma200','MA200','num'],['ma50_ma200','MA50/MA200','num'],['vs_ma50','距MA50%','chg'],['vs_ma200','距MA200%','chg'],['macd_weekly','周MACD柱','chg'],['ret1w','1周%','chg'],['ret1m','1月%','chg'],['ret3m','3月%','chg'],['ret6m','6月%','chg'],['ret_ytd','年初至今%','chg'],['ret1y','1年%','chg'],['fip_negative_count','FIP负值数','num'],['triple_rps90','三线≥90','bool'],['trend_bull','多头排列','bool']
 ];
 let DATA=[],META={},rows=[],sortKey='composite_rps',sortDir=-1,page=1,pageSize=100,priceChart=null,factorChart=null;
+let SECTORHISTORY={dates:[],byDate:{},industries:[]},historyChart=null;
 const $=id=>document.getElementById(id); const n=id=>$(id).value===''?null:Number($(id).value);
 function fmt(v,t){if(v===null||v===undefined||Number.isNaN(v))return '—';if(t==='bool')return `<span class="pill ${v?'yes':'no'}">${v?'是':'否'}</span>`;if(t==='str')return String(v);if(t==='rps')return Number(v).toFixed(1);if(t==='fip')return Number(v).toFixed(3);return Number(v).toLocaleString('zh-CN',{maximumFractionDigits:4});}
 function cls(v,t){if(v===null||v===undefined)return '';if(t==='chg')return Number(v)>=0?'up':'down';if(t==='rps')return 'rps';if(t==='fip')return Number(v)<0?'fip-good':'fip-bad';return '';}
@@ -108,7 +126,21 @@ function openDetail(code){const r=DATA.find(x=>x.code===code);if(!r)return;$('de
 function drawCharts(r){if(priceChart)priceChart.dispose();if(factorChart)factorChart.dispose();priceChart=echarts.init($('priceChart'));factorChart=echarts.init($('factorChart'));priceChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:['收盘价','MA20','MA50']},grid:{left:52,right:18,top:40,bottom:42},xAxis:{type:'category',data:r.history.dates,axisLabel:{hideOverlap:true}},yAxis:{type:'value',scale:true},series:[{name:'收盘价',type:'line',showSymbol:false,data:r.history.close,lineStyle:{color:'#183153',width:2}},{name:'MA20',type:'line',showSymbol:false,data:r.history.ma20,lineStyle:{color:'#d92d20'}},{name:'MA50',type:'line',showSymbol:false,data:r.history.ma50,lineStyle:{color:'#2563eb'}}]});factorChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:['RPS','FIP×100']},grid:{left:48,right:22,top:40,bottom:42},xAxis:{type:'category',data:['50日','120日','250日']},yAxis:{type:'value',min:-100,max:100},series:[{name:'RPS',type:'bar',data:[r.rps50,r.rps120,r.rps250],itemStyle:{color:'#d92d20'}},{name:'FIP×100',type:'line',data:[r.fip50==null?null:r.fip50*100,r.fip120==null?null:r.fip120*100,r.fip250==null?null:r.fip250*100],lineStyle:{color:'#2563eb'},itemStyle:{color:'#2563eb'},symbolSize:9}]});}
 function closeDetail(){$('detailModal').classList.remove('open')}function openManual(){$('manualModal').classList.add('open')}function closeManual(){$('manualModal').classList.remove('open')}
 document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>preset(b.dataset.p));$('apply').onclick=apply;$('clear').onclick=()=>preset('reset');$('first').onclick=()=>{page=1;render()};$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};$('last').onclick=()=>{page=Math.ceil(rows.length/pageSize);render()};$('pageSize').onchange=()=>{pageSize=Number($('pageSize').value);page=1;render()};window.addEventListener('resize',()=>{priceChart?.resize();factorChart?.resize()});
-Promise.all([fetch('data/rps.json').then(r=>r.json()),fetch('data/fip.json').then(r=>r.json())]).then(([RPS,FIP])=>{META=RPS.meta;DATA=RPS.data;rows=DATA.slice();$('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}`;$('note').innerHTML=`数据源：${META.source}，截至 ${META.asof}；${META.stock_pool_note}；${META.market_cap_note}。<b>FIP 的正负必须结合区间收益方向理解。</b>`;buildHead();computeKpis();apply(); return fetch('data/sector_rps.json').then(r=>r.json()).catch(e=>{console.warn('板块数据加载失败（不影响个股视图）',e);return null;});}).then(S=>{if(!S)return;SECTORMETA=S.meta;SECTORDATA=S.data;buildSectorHead();$('sectorStatus').textContent=`${SECTORMETA.count} 个行业｜截至 ${SECTORMETA.asof}`;$('sectornote').innerHTML=`板块 RPS = 各行业「市值加权区间收益」在全部行业中的横截面百分位×100；综合 = 0.3×RPS50 + 0.3×RPS120 + 0.4×RPS250。市值加权收益 = 行业内成分股按总市值加权平均。数据截至 ${SECTORMETA.asof}。`;}).catch(e=>{$('dataStatus').textContent='数据加载失败';document.querySelector('.table-scroll').innerHTML=`<div class="error">${e}<br>请通过 GitHub Pages 或本地 HTTP 服务打开，不要直接双击 file://。</div>`;});
+Promise.all([
+  fetch('data/rps.json').then(r=>r.json()),
+  fetch('data/fip.json').then(r=>r.json()),
+  fetch('data/sector_rps.json').then(r=>r.json()).catch(e=>{console.warn('板块数据加载失败（不影响个股视图）',e);return null;}),
+  fetch('data/sector_rps_history.json').then(r=>r.json()).catch(e=>{console.warn('板块历史数据加载失败（不影响其它视图）',e);return null;})
+]).then(([RPS,FIP,S,H])=>{
+  META=RPS.meta;DATA=RPS.data;rows=DATA.slice();
+  $('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}`;
+  $('note').innerHTML=`数据源：${META.source}，截至 ${META.asof}；${META.stock_pool_note}；${META.market_cap_note}。<b>FIP 的正负必须结合区间收益方向理解。</b>`;
+  buildHead();computeKpis();apply();
+  if(S){SECTORMETA=S.meta;SECTORDATA=S.data;buildSectorHead();$('sectorStatus').textContent=`${SECTORMETA.count} 个行业｜截至 ${SECTORMETA.asof}`;$('sectornote').innerHTML=`板块 RPS = 各行业「市值加权区间收益」在全部行业中的横截面百分位×100；综合 = 0.3×RPS50 + 0.3×RPS120 + 0.4×RPS250。市值加权收益 = 行业内成分股按总市值加权平均。数据截至 ${SECTORMETA.asof}。`;}
+  if(H)loadSectorHistory(H);
+  populateHistorySelect();
+  drawHistory();
+}).catch(e=>{$('dataStatus').textContent='数据加载失败';document.querySelector('.table-scroll').innerHTML=`<div class="error">${e}<br>请通过 GitHub Pages 或本地 HTTP 服务打开，不要直接双击 file://。</div>`;});
 
 // ---------- 板块 RPS ----------
 let SECTORDATA=[],SECTORMETA={},srows=[],sSortKey='sector_composite_rps',sSortDir=-1,secHighlight=null;
@@ -126,9 +158,27 @@ function buildSectorHead(){const tr=$('sectbl').querySelector('thead tr');tr.inn
 function computeSectorKpis(){const v=SECTORDATA.filter(r=>r.sector_composite_rps!=null);const strong=v.filter(r=>r.sector_composite_rps>=90);const weak=v.filter(r=>r.sector_composite_rps<=20);const byRps=a=>a.slice().sort((x,y)=>y.sector_composite_rps-x.sector_composite_rps);const top=byRps(v)[0],bottom=byRps(v)[v.length-1];const items=[['行业数',v.length],['板块RPS≥90',strong.length],['板块RPS≤20',weak.length],['最强板块',top?top.industry:'—'],['最弱板块',bottom?bottom.industry:'—']];$('sectorKpis').innerHTML=items.map((x,i)=>`<div class="kpi ${i===3?'hot':''}"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');}
 function secPreset(p){['sq','scompMin','scompMax','snMin','sret3m'].forEach(x=>$(x).value='');document.querySelectorAll('#sectorPresets .preset').forEach(b=>b.classList.remove('active'));if(p==='strong')$('scompMin').value=90;if(p==='weak')$('scompMax').value=20;document.querySelector(`#sectorPresets [data-sp="${p}"]`)?.classList.add('active');applySector();}
 function applySector(){const q=$('sq').value.trim(),comp=n2('scompMin'),compMax=n2('scompMax'),sn=n2('snMin'),r3m=n2('sret3m');srows=SECTORDATA.filter(r=>{if(q&&!(r.industry||'').includes(q))return false;if(comp!==null&&(r.sector_composite_rps==null||r.sector_composite_rps<comp))return false;if(compMax!==null&&(r.sector_composite_rps==null||r.sector_composite_rps>compMax))return false;if(sn!==null&&(r.n_stocks==null||r.n_stocks<sn))return false;if(r3m!==null&&(r.ret3m_cw==null||r.ret3m_cw<r3m))return false;return true;});srows.sort((x,y)=>{let a=x[sSortKey],b=y[sSortKey],ae=a===null||a===undefined,be=b===null||b===undefined;if(ae&&be)return 0;if(ae)return 1;if(be)return -1;if(typeof a==='string')return a.localeCompare(b,'zh-CN')*sSortDir;return(a-b)*sSortDir;});renderSector();}
-function renderSector(){$('sectbl').querySelector('tbody').innerHTML=srows.map(r=>'<tr data-ind="'+r.industry+'"'+(secHighlight&&r.industry===secHighlight?' class="hl"':'')+'>'+SECTOR_COLS.map(([k,,t])=>{let inner=fmtS(r[k],t);if(k==='top_name')inner=`<span title="${r.top_code}｜综合RPS ${r.top_composite_rps!=null?r.top_composite_rps.toFixed(1):'—'}">${inner}</span>`;return `<td class="${clsS(r[k],t)} col-${k}" style="${t==='rps'?heatS(r[k]):''}">${inner}</td>`;}).join('')+'</tr>').join('');$('scount').textContent=`共 ${srows.length.toLocaleString()} / ${SECTORDATA.length.toLocaleString()} 个行业｜按 ${SECTOR_COLS.find(x=>x[0]===sSortKey)?.[1]||sSortKey} ${sSortDir<0?'降序':'升序'}`;$('sectbl').querySelectorAll('th').forEach(th=>{const arr=th.querySelector('.arr');arr.textContent=th.dataset.k===sSortKey?(sSortDir<0?' ▼':' ▲'):'';});}
-function switchView(v){const stock=v==='stock';$('kpis').style.display=stock?'':'none';$('stockPanel').style.display=stock?'':'none';$('sectorView').style.display=stock?'none':'';document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='sector'&&SECTORDATA.length){computeSectorKpis();applySector();}}
+function renderSector(){$('sectbl').querySelector('tbody').innerHTML=srows.map(r=>'<tr data-ind="'+r.industry+'"'+(secHighlight&&r.industry===secHighlight?' class="hl"':'')+'>'+SECTOR_COLS.map(([k,,t])=>{let inner=fmtS(r[k],t);if(k==='top_name')inner=`<span title="${r.top_code}｜综合RPS ${r.top_composite_rps!=null?r.top_composite_rps.toFixed(1):'—'}">${inner}</span>`;if(k==='industry')inner=`<span class="ilink" onclick="jumpToHistory('${r.industry.replace(/'/g,"")}')">${inner}</span>`;return `<td class="${clsS(r[k],t)} col-${k}" style="${t==='rps'?heatS(r[k]):''}">${inner}</td>`;}).join('')+'</tr>').join('');$('scount').textContent=`共 ${srows.length.toLocaleString()} / ${SECTORDATA.length.toLocaleString()} 个行业｜按 ${SECTOR_COLS.find(x=>x[0]===sSortKey)?.[1]||sSortKey} ${sSortDir<0?'降序':'升序'}`;$('sectbl').querySelectorAll('th').forEach(th=>{const arr=th.querySelector('.arr');arr.textContent=th.dataset.k===sSortKey?(sSortDir<0?' ▼':' ▲'):'';});}
+function switchView(v){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.view===v));const stock=v==='stock',sector=v==='sector',hist=v==='history';$('kpis').style.display=stock?'':'none';$('stockPanel').style.display=stock?'':'none';$('sectorView').style.display=sector?'':'none';$('historyView').style.display=hist?'':'none';if(sector&&SECTORDATA.length){computeSectorKpis();applySector();}if(hist){populateHistorySelect();drawHistory();}}
 function jumpToSector(ind){if(!SECTORDATA.length)return;closeDetail();secHighlight=ind;$('sq').value=ind;switchView('sector');requestAnimationFrame(()=>{const tr=$('sectbl').querySelector('tbody tr.hl');if(tr)tr.scrollIntoView({block:'center'});});}
+function jumpToHistory(ind){if(!SECTORDATA.length)return;closeDetail();$('histInd').value=ind;switchView('history');}
+function loadSectorHistory(H){SECTORHISTORY={dates:[],byDate:{},industries:[]};if(!H)return;const dates=Object.keys(H).sort();const indset={};dates.forEach(d=>{SECTORHISTORY.byDate[d]=H[d];Object.keys(H[d]).forEach(k=>indset[k]=1);});SECTORHISTORY.dates=dates;SECTORHISTORY.industries=Object.keys(indset).sort();}
+function populateHistorySelect(){const sel=$('histInd');const cur=sel.value;const inds=SECTORDATA.length?SECTORDATA.map(r=>r.industry):SECTORHISTORY.industries;sel.innerHTML=inds.map(x=>`<option value="${x}">${x}</option>`).join('');if(cur&&inds.includes(cur))sel.value=cur;}
+function drawHistory(){const ind=$('histInd').value;const note=$('historyNote');const status=$('historyStatus');const n=SECTORHISTORY.dates.length;
+  if(!ind||n===0){status.textContent='数据积累中';note.textContent='目前仅有 '+n+' 个交易日快照；每日收盘定稿（15:10）后会自动追加，走势图将随天数增加而成形。';if(historyChart)historyChart.clear();return;}
+  if(n===1){note.textContent='已积累 1 个交易日（'+SECTORHISTORY.dates[0]+'）；继续每日刷新即可生成多日走势。';}
+  else{note.textContent='已积累 '+n+' 个交易日快照（'+SECTORHISTORY.dates[0]+' → '+SECTORHISTORY.dates[n-1]+'）。';}
+  const dates=SECTORHISTORY.dates.slice();const crps=[],r6m=[],rank=[];
+  dates.forEach(d=>{const row=SECTORHISTORY.byDate[d][ind];crps.push(row&&row.crps!=null?row.crps:null);r6m.push(row&&row.r6m_cw!=null?row.r6m_cw:null);});
+  dates.forEach(d=>{const rec=SECTORHISTORY.byDate[d];const arr=Object.entries(rec).filter(([k,v])=>v&&v.crps!=null).sort((a,b)=>b[1].crps-a[1].crps);const idx=arr.findIndex(([k])=>k===ind);rank.push(idx>=0?idx+1:null);});
+  const lastRow=SECTORHISTORY.byDate[dates[n-1]][ind];const lastRank=rank[n-1];const tot=SECTORHISTORY.industries.length;
+  status.innerHTML=`${ind}｜最新板块RPS <b>${lastRow&&lastRow.crps!=null?lastRow.crps.toFixed(1):'—'}</b>｜全市场排名 <b>${lastRank!=null?lastRank+' / '+tot:'—'}</b>｜市值加权6月 <b>${lastRow&&lastRow.r6m_cw!=null?(lastRow.r6m_cw>=0?'+':'')+lastRow.r6m_cw.toFixed(1)+'%':'—'}</b>`;
+  if(!historyChart)historyChart=echarts.init($('historyChart'));
+  historyChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:['板块综合RPS','全市场排名']},grid:{left:54,right:58,top:42,bottom:48},xAxis:{type:'category',data:dates,axisLabel:{hideOverlap:true}},
+    yAxis:[{type:'value',name:'板块RPS',min:0,max:100,position:'left',axisLabel:{formatter:'{value}'}},{type:'value',name:'排名',min:1,max:Math.max(2,tot),inverse:true,position:'right',axisLabel:{formatter:'第{value}'}}],
+    series:[{name:'板块综合RPS',type:'line',showSymbol:true,symbolSize:6,data:crps,lineStyle:{color:'#2563eb',width:2},itemStyle:{color:'#2563eb'}},
+            {name:'全市场排名',type:'line',yAxisIndex:1,showSymbol:true,symbolSize:6,data:rank,lineStyle:{color:'#f59e0b',width:2},itemStyle:{color:'#f59e0b'}}]},true);
+}
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 document.querySelectorAll('#sectorPresets .preset').forEach(b=>b.onclick=()=>secPreset(b.dataset.sp));
 $('sapply').onclick=applySector;$('sclear').onclick=()=>secPreset('reset');

@@ -61,6 +61,8 @@ RPS_JSON = DATA_DIR / "rps.json"
 FIP_JSON = DATA_DIR / "fip.json"
 META_JSON = DATA_DIR / "meta.json"
 SECTOR_JSON = DATA_DIR / "sector_rps.json"
+SECTOR_HISTORY_JSON = DATA_DIR / "sector_rps_history.json"   # 板块 RPS 逐日快照（供历史排名走势图）
+MAX_HISTORY_DATES = 600                                     # 最多保留约 2.3 年交易日
 INDEX_HTML = ROOT / "index.html"
 ERROR_LOG = DATA_DIR / "error.log"
 KLINE_CACHE = DATA_DIR / "kline_cache.parquet"         # 运行时缓存（盘中用）
@@ -452,7 +454,57 @@ def write_sector(records, asof, source_desc):
         json.dumps({"meta": meta, "data": records}, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
+    # 历史快照（按日累积，供板块历史排名走势图使用；同 asof 覆盖，每天 1 个点）
+    try:
+        write_sector_history(records, asof)
+    except Exception as e:
+        log_err(f"板块历史快照写入失败（不影响板块RPS）: {repr(e)[:200]}")
     print(f"已生成 {SECTOR_JSON}（{len(records)} 个行业）")
+
+
+def write_sector_history(records, asof):
+    """把当日板块 RPS 截面快照追加进历史文件。
+
+    - 以 asof 交易日为键，覆盖写入（intraday 多次运行同键更新，close 定稿）；
+      因此每个交易日最终只保留 1 个最新点。
+    - 每天记录每个行业的：板块综合RPS / RPS50 / RPS120 / RPS250 / 市值加权6月收益 /
+      成分股数 / 强RPS股数 / 平均个股RPS。
+    - 仅保留最近 MAX_HISTORY_DATES 个交易日（约 2.3 年），避免无限膨胀。
+    """
+    if not records:
+        return
+    today = {}
+    for r in records:
+        ind = r.get("industry")
+        if not ind:
+            continue
+        today[ind] = {
+            "crps": r.get("sector_composite_rps"),
+            "r50": r.get("rps_ret50_cw"),
+            "r120": r.get("rps_ret120_cw"),
+            "r250": r.get("rps_ret250_cw"),
+            "r6m_cw": r.get("ret6m_cw"),
+            "n_stocks": r.get("n_stocks"),
+            "n_strong": r.get("n_strong"),
+            "avg_composite_rps": r.get("avg_composite_rps"),
+        }
+    hist = {}
+    if SECTOR_HISTORY_JSON.exists():
+        try:
+            hist = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
+        except Exception as e:
+            log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，重建: {repr(e)[:160]}")
+            hist = {}
+    hist[asof] = today
+    keys = sorted(hist.keys())
+    if len(keys) > MAX_HISTORY_DATES:
+        for k in keys[:-MAX_HISTORY_DATES]:
+            hist.pop(k, None)
+    SECTOR_HISTORY_JSON.write_text(
+        json.dumps(hist, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"已写入板块历史快照 {SECTOR_HISTORY_JSON.name}（截至 {asof}，共 {len(hist)} 个交易日）")
 
 
 # ---------------- 数据获取 ----------------
