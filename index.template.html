@@ -19,7 +19,7 @@
 </head>
 <body>
 <div class="shell">
-  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p>行情截至 __ASOF__ ｜ 生成时间 __GENERATED_AT__ ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p>  </div>
+  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p>行情截至 __ASOF__ ｜ 生成时间 __GENERATED_AT__ ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
   <div class="tabs">
     <button class="tab active" data-view="stock">个股动量</button>
     <button class="tab" data-view="sector">板块RPS</button>
@@ -51,8 +51,7 @@
     <div class="pager"><button id="first">首页</button><button id="prev">上一页</button><span id="page"></span><button id="next">下一页</button><button id="last">末页</button><select id="pageSize"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></div>
     <div class="note" id="note">RPS、FIP、均线、区间收益等均由本地前复权日线计算；市值来自本地行情快照。看板用于扫描与研究，不等于交易信号。</div>
   </section>
-</div>
-<div id="sectorView" style="display:none">
+  <div id="sectorView" style="display:none">
   <div class="kpis" id="sectorKpis"></div>
   <section class="panel">
     <div class="panel-head"><span>板块动量 RPS（行业横截面相对强度）</span><span id="sectorStatus">加载数据中…</span></div>
@@ -74,6 +73,7 @@
     <div class="table-scroll"><table id="sectbl"><thead><tr></tr></thead><tbody></tbody></table></div>
     <div class="note" id="sectornote"></div>
   </section>
+</div>
 </div>
 <div class="modal" id="detailModal"><div class="modal-card"><div class="modal-head"><h2 id="detailTitle"></h2><button class="close" onclick="closeDetail()">×</button></div><div class="detail-grid" id="detailGrid"></div><div class="charts"><div id="priceChart" class="chart"></div><div id="factorChart" class="chart"></div></div></div></div>
 <div class="modal" id="manualModal"><div class="modal-card"><div class="modal-head"><h2>指标口径与使用说明</h2><button class="close" onclick="closeManual()">×</button></div><div class="manual"><h3>RPS（横截面相对强度）</h3><p>RPS50 / 120 / 250 = 对应交易日窗口收益率在当前有效 A 股股票池中的百分位 ×100。综合RPS = <code>0.3×RPS50 + 0.3×RPS120 + 0.4×RPS250</code>。数值越高，仅表示过去对应周期相对更强。</p><h3>FIP（动量路径质量）</h3><p>FIP_N = <code>sign(N日收益) × (下跌日数−上涨日数) / N</code>。对于正收益股票，FIP 越负，代表上涨天数越多、路径相对平滑；负收益股票需结合方向理解，不能机械地只看“越负越好”。</p><h3>辅助字段</h3><p>提供 MA20/50/120/200、距均线、距前一交易日止250日最高价、量比、20日年化波动率、RSI14、周MACD柱、区间涨幅、总市值等，结构参考美股选股盘。</p><h3>数据边界</h3><p class="warn">K线为腾讯前复权日线本地缓存；总市值是缓存快照，并非历史市值。数据截至页面顶部日期，未接入实时盘中行情、财务指标与换手率（行业分类已纳入）。</p><p><b>免责声明：</b>本工具仅用于量化研究与信息筛选，不构成投资建议。</p></div></div></div>
