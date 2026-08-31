@@ -543,6 +543,10 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="仅处理前 N 只（冒烟测试用）")
     args = ap.parse_args()
 
+    # close 模式会写回缓存，必须基于全量 frame，禁止 --limit 截断
+    if args.mode == "close":
+        args.limit = None
+
     print(f"== 模式: {args.mode} ==")
     industry_map, mcap_csv, watch_codes, watch_names = load_meta()
     mcap_map = dict(mcap_csv)
