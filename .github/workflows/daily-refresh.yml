@@ -1,0 +1,76 @@
+name: A-share Intraday Refresh
+
+# 云端自动刷新（公开仓库，Actions 时长免费不限量）：
+#  - 盘中每 15 分钟刷新一次（北京 9:00–11:59、13:00–14:59）
+#  - 收盘后 15:10 定稿一次（写回本地 K 线缓存，保证历史滚动）
+#  - 每次运行拉一次全市场实时行情(stock_zh_a_spot) + 用本地 300 日缓存重算 RPS/FIP
+# 浏览器访问 https://yueling-buddy.github.io/A-share-portal/ 永远最新。
+on:
+  schedule:
+    - cron: "*/15 1-3 * * 1-5"     # UTC 1:00-3:59 = 北京 9:00-11:59（上午时段）
+    - cron: "*/15 5-6 * * 1-5"     # UTC 5:00-6:59 = 北京 13:00-14:59（下午时段）
+    - cron: "10 7 * * 1-5"         # UTC 7:10 = 北京 15:10（收盘定稿）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "bootstrap | intraday | close"
+        required: false
+        default: "intraday"
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Restore K-line cache (daily key + fallback)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: data/kline_cache.parquet
+          key: kline-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            kline-
+
+      - name: Seed cache if missing
+        run: |
+          if [ ! -f data/kline_cache.parquet ]; then
+            echo "缓存缺失，从提交种子恢复"
+            cp data/kline_cache_seed.parquet data/kline_cache.parquet
+          fi
+
+      - name: Determine mode
+        id: mode
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then
+            export TZ=Asia/Shanghai
+            H=$(date +%H); M=$(date +%M)
+            if [ "$H" = "15" ] && [ "$M" -le 30 ]; then MODE=close; else MODE=intraday; fi
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "运行模式: $MODE"
+
+      - name: Refresh data
+        run: python scripts/refresh.py --mode ${{ steps.mode.outputs.mode }}
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html data/rps.json data/fip.json data/meta.json
+          git commit -m "auto: ${{ steps.mode.outputs.mode }} refresh $(TZ=Asia/Shanghai date +%F_%H:%M)" || echo "no changes"
+          git push

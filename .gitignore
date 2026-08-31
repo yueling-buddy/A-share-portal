@@ -1,0 +1,35 @@
+# 旧构建/发布产物
+dist/
+github-pages-dist/
+__pycache__/
+
+# 日志（含刷新异常日志，由 refresh.py 本地生成，不纳入版本控制）
+*.log
+data/error.log
+
+# 运行时 K 线缓存（由云端/本地刷新生成，体积大；仅提交 _seed 种子）
+data/kline_cache.parquet
+
+# 本地服务/历史脚本（非云端所需）
+logs/
+.local_server.pid
+serve_dashboard.py
+install_local_service.bat
+start_dashboard.bat
+status_dashboard.bat
+stop_dashboard.bat
+start_local_service.vbs
+rebuild_dashboard.bat
+publish_github.bat
+publish_github.py
+deploy_github_root.py
+build_dashboard.py
+fetch_industry.py
+retry_industry.py
+_inline_check.js
+_standalone_check.js
+build.log
+build_run.log
+publish_run.log
+smoke.log
+full.log

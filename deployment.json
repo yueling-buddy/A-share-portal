@@ -1,0 +1,16 @@
+{
+  "local_url": "http://127.0.0.1:8768/",
+  "local_health_url": "http://127.0.0.1:8768/healthz",
+  "public_url": "https://yueling-buddy.github.io/A-share-portal/",
+  "public_platform": "GitHub Pages",
+  "github_repository": "yueling-buddy/A-share-portal",
+  "github_subpath": "",
+  "deploy_directory": "D:\\Workbuddy Space\\A股大作战\\a-share-dashboard\\github-pages-dist",
+  "entry": "index.html",
+  "offline_fallback": "dist/dashboard_standalone.html",
+  "local_startup_mode": "current-user Startup folder",
+  "rebuild_command": "rebuild_dashboard.bat",
+  "publish_command": "publish_github.bat",
+  "legacy_us_stock_portal_url": "https://yueling-buddy.github.io/us-stock-portal/a-share-rps/",
+  "legacy_cloudstudio_url": "https://3f7e6ab05462437bb98bf420c3192d0a.app.workbuddy.link"
+}
