@@ -353,7 +353,10 @@ def fetch_spot():
         if df is None or df.empty:
             return None
         df = df.copy()
-        df["code"] = df["代码"].astype(str).str.zfill(6)
+        # 新浪 spot 的"代码"带交易所前缀（sh600519/sz000001/bj920000），
+        # 须提取末 6 位纯数字，才能与缓存的纯数字 code 对齐
+        df["code"] = df["代码"].astype(str).str.extract(r"(\d{6})$")[0]
+        df = df.dropna(subset=["code"])
         return df
     return with_retry(_call, "stock_zh_a_spot")
 
@@ -441,9 +444,11 @@ def load_cache_frames() -> dict:
 
 
 def trade_date_for(now_bj: datetime):
-    """返回"计算日"日期：盘中交易时段=今天；其他=最近历史日（避免节假日重复追加）。"""
-    is_trading = now_bj.weekday() < 5 and (dtime(9, 30) <= now_bj.time() <= dtime(15, 0))
-    return now_bj.date() if is_trading else None
+    """返回"计算日"日期：交易日 9:30 之后（含盘中与收盘后）= 当天（当日为已完成交易日，可追加）；
+    交易日 9:30 前（隔夜）/ 周末 / 节假日 = None（不追加当日，仅沿用历史重算）。"""
+    if now_bj.weekday() < 5 and now_bj.time() >= dtime(9, 30):
+        return now_bj.date()
+    return None
 
 
 def apply_spot_to_frames(frames: dict, spot: pd.DataFrame, names: dict, now_bj: datetime):
@@ -464,11 +469,13 @@ def apply_spot_to_frames(frames: dict, spot: pd.DataFrame, names: dict, now_bj: 
                 }
             except Exception:
                 continue
-    # 计算日：盘中=今天；否则取各 frame 最近历史日（用于统一 asof）
+    # 计算日：盘中/收盘后=今天；非交易时段=最近历史日
     if trade_date is not None:
         calc_date = trade_date
     else:
-        # 非交易时段：以大多数 frame 的最新日期作为计算日
+        # 非交易时段（隔夜/周末/节假日）：不注入实时价，仅用历史缓存重算，
+        # 避免把"当日实时价"错写进历史 bar（如周五 bar 被周一价覆盖）
+        spot_map = {}
         calc_date = max((pd.Timestamp(fr["date"].iloc[-1]).date() for fr in frames.values()), default=date.today())
 
     updated = {}
