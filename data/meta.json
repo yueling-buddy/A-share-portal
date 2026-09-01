@@ -1,10 +1,10 @@
 {
-  "asof": "2026-08-28",
-  "generated_at": "2026-09-01 01:25:57",
-  "count": 5208,
+  "asof": "2026-09-01",
+  "generated_at": "2026-09-01 01:41:13",
+  "count": 5211,
   "universe_count": 5212,
   "source": "新浪实时行情 + 本地 300 日缓存（无未来函数）",
-  "stock_pool_note": "全市场横截面基准为成功计算的 5208 只；in_watchlist 标记选股盘。",
+  "stock_pool_note": "全市场横截面基准为成功计算的 5211 只；in_watchlist 标记选股盘。",
   "market_cap_note": "总市值主用 data/mcap.csv 快照（盘中实时市值未增强）。",
   "formula": {
     "rps": "N日收益率在当前有效股票池中的横截面百分位×100",
