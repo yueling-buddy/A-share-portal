@@ -72,6 +72,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add index.html data/rps.json data/fip.json data/meta.json data/sector_rps.json data/sector_rps_history.json
+          git add index.html data/rps.json data/fip.json data/meta.json data/sector_rps.json data/sector_rps_history.json data/cloud_run_log.json
           git commit -m "auto: ${{ steps.mode.outputs.mode }} refresh $(TZ=Asia/Shanghai date +%F_%H:%M)" || echo "No changes to commit"
           git push

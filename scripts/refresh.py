@@ -34,6 +34,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import shutil
 import sys
@@ -65,6 +66,7 @@ FIP_JSON = DATA_DIR / "fip.json"
 META_JSON = DATA_DIR / "meta.json"
 SECTOR_JSON = DATA_DIR / "sector_rps.json"
 SECTOR_HISTORY_JSON = DATA_DIR / "sector_rps_history.json"   # 板块 RPS 逐日快照（供历史排名走势图）
+RUN_LOG_JSON = DATA_DIR / "cloud_run_log.json"               # 运行诊断（云端可观测：行情源/行数/asof/守卫）
 MAX_HISTORY_DATES = 600                                     # 最多保留约 2.3 年交易日
 INDEX_HTML = ROOT / "index.html"
 ERROR_LOG = DATA_DIR / "error.log"
@@ -95,6 +97,31 @@ def log_err(msg: str) -> None:
     except Exception:
         pass
     print("ERROR:", msg, file=sys.stderr)
+
+
+# 实时行情诊断：记录每个数据源各取到多少只、最终用了哪个源
+SPOT_DIAG = {"attempts": [], "source": None, "rows": 0}
+
+
+def write_run_log(**kw):
+    """把本次运行的关键诊断信息写入 data/cloud_run_log.json。
+
+    无条件覆盖写入（即使实时行情失败/守卫跳过），便于在无法查看
+    GitHub Actions 日志时，直接公网读取判断云端到底发生了什么。
+    """
+    try:
+        rec = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "host": "cloud" if os.environ.get("GITHUB_ACTIONS") else "local",
+            "spot_attempts": list(SPOT_DIAG["attempts"]),
+            "spot_source": SPOT_DIAG["source"],
+            "spot_rows": SPOT_DIAG["rows"],
+        }
+        rec.update(kw)
+        RUN_LOG_JSON.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[runlog] 已写 {RUN_LOG_JSON.name}: {rec}")
+    except Exception as e:
+        log_err(f"写 {RUN_LOG_JSON.name} 失败: {repr(e)[:160]}")
 
 
 def with_retry(fn, what: str):
@@ -553,10 +580,14 @@ def fetch_spot(codes=None):
     # 1) 新浪原始接口（主源：单请求批量、不依赖 akshare、海外通常可达）
     if codes:
         df = _fetch_spot_sina_raw(codes)
-        print(f"[spot] 新浪原始接口：{len(df) if df is not None else 0} 只")
+        n = len(df) if df is not None else 0
+        SPOT_DIAG["attempts"].append({"src": "sina_raw", "rows": n})
+        print(f"[spot] 新浪原始接口：{n} 只")
         if df is not None and not df.empty:
+            SPOT_DIAG["source"], SPOT_DIAG["rows"] = "sina_raw", n
             return df
     else:
+        SPOT_DIAG["attempts"].append({"src": "sina_raw", "rows": 0, "note": "无代码列表，跳过"})
         print("[spot] 未提供代码列表，跳过新浪原始接口")
 
     # 2) akshare stock_zh_a_spot（兜底）
@@ -571,8 +602,11 @@ def fetch_spot(codes=None):
         d = d.dropna(subset=["code"])
         return d
     df = with_retry(_call, "stock_zh_a_spot")
-    print(f"[spot] akshare：{len(df) if df is not None else 0} 只")
+    n = len(df) if df is not None else 0
+    SPOT_DIAG["attempts"].append({"src": "akshare", "rows": n})
+    print(f"[spot] akshare：{n} 只")
     if df is not None and not df.empty:
+        SPOT_DIAG["source"], SPOT_DIAG["rows"] = "akshare", n
         return df
     log_err("实时行情全部数据源失败，沿用缓存历史（不更新当天那根）")
     return None
@@ -844,6 +878,7 @@ def main():
         spot = None
     else:
         print(f"实时行情：{len(spot)} 只")
+    write_run_log(mode=args.mode, stage="spot_done", n_codes=len(frames))
 
     now_bj = datetime.now(BJ)
     updated, calc_date = apply_spot_to_frames(frames, spot, names, now_bj)
@@ -857,11 +892,16 @@ def main():
             if prev and asof < prev:
                 log_err(f"计算 asof={asof} 早于已发布 asof={prev}，疑似实时行情缺失，跳过写盘以免回退")
                 print(f"[guard] 跳过写盘：asof {asof} < 已发布 {prev}")
+                write_run_log(mode=args.mode, stage="guard_skip",
+                              asof=asof, published_asof=prev, guard_skipped=True,
+                              note="实时行情缺失，跳过写盘以防回退")
                 return
         except Exception:
             pass
 
     write_outputs(records, str(calc_date), "新浪实时行情 + 本地 300 日缓存（无未来函数）", len(updated), False)
+    write_run_log(mode=args.mode, stage="written", asof=str(calc_date),
+                  guard_skipped=False, n_records=len(records))
 
     if args.mode == "close":
         # 收盘定稿：把当日完成的日线写回缓存
