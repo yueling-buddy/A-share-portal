@@ -293,8 +293,26 @@ def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, 
     dt_idx = pd.to_datetime(df["date"])
     ytd_part = df[dt_idx.dt.year == dt_idx.iloc[-1].year]
     ytd = (last / float(ytd_part["close"].iloc[0]) - 1.0) * 100 if len(ytd_part) else np.nan
-    history = df.tail(120)
+    history = df.tail(120).copy()
     history_dates = [pd.Timestamp(x).strftime("%Y-%m-%d") for x in history["date"]]
+
+    # 识别停牌 / 无成交日：腾讯有时会用 O=H=L=0、close=前一日收盘 来填补当日"无数据"
+    # 若 volume=0 或 O=H=L=0 视为停牌日，把 O/H/L 用 close 填平，避免 K 线出现「从 0 到昨收」的伪长下影
+    h_open = history["open"].astype(float).tolist()
+    h_high = history["high"].astype(float).tolist()
+    h_low = history["low"].astype(float).tolist()
+    h_close = history["close"].astype(float).tolist()
+    h_volume = history["volume"].astype(float).tolist() if "volume" in history.columns else [0.0] * len(h_close)
+    halted_arr = [False] * len(h_close)
+    for i in range(len(h_close)):
+        o, hi, lo, c = h_open[i], h_high[i], h_low[i], h_close[i]
+        v = h_volume[i] if i < len(h_volume) else 0.0
+        is_halt = (o == 0 and hi == 0 and lo == 0) or (not np.isfinite(v)) or (v == 0)
+        if is_halt:
+            halted_arr[i] = True
+            h_open[i] = c
+            h_high[i] = c
+            h_low[i] = c
 
     row = {
         "code": code,
@@ -312,6 +330,11 @@ def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, 
         "volatility20": finite(volatility20, 2),
         "rsi14": finite(rsi14(close), 2),
         "macd_weekly": finite(weekly_macd_hist(df), 4),
+        "_ma20": finite(ma[20], 3),
+        "_ma50": finite(ma[50], 3),
+        "_ma120": finite(ma[120], 3),
+        "_ma200": finite(ma[200], 3),
+        "halted": bool(halted_arr[-1]) if halted_arr else False,
         "vs_ma50": finite((last / ma[50] - 1.0) * 100 if np.isfinite(ma[50]) and ma[50] else np.nan, 2),
         "vs_ma200": finite((last / ma[200] - 1.0) * 100 if np.isfinite(ma[200]) and ma[200] else np.nan, 2),
         "ma50_ma200": finite(ma[50] / ma[200] if np.isfinite(ma[50]) and np.isfinite(ma[200]) and ma[200] else np.nan, 4),
@@ -326,12 +349,13 @@ def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, 
         "fip250": finite(fip_value(close, 250), 4),
         "history": {
             "dates": history_dates,
-            "open": [finite(x, 3) for x in history["open"]],
-            "high": [finite(x, 3) for x in history["high"]],
-            "low": [finite(x, 3) for x in history["low"]],
-            "close": [finite(x, 3) for x in history["close"]],
+            "open": [finite(x, 3) for x in h_open],
+            "high": [finite(x, 3) for x in h_high],
+            "low": [finite(x, 3) for x in h_low],
+            "close": [finite(x, 3) for x in h_close],
             "ma20": [finite(x, 3) for x in history["close"].rolling(20).mean()],
             "ma50": [finite(x, 3) for x in history["close"].rolling(50).mean()],
+            "halted": halted_arr,
         },
     }
     for w in WINDOWS:
@@ -380,9 +404,13 @@ def compute_all(frames: dict, names: dict, industry_map, mcap_map, watch_codes):
     frame["composite_rps"] = 0.3 * frame["rps50"] + 0.3 * frame["rps120"] + 0.4 * frame["rps250"]
     frame["fip_negative_count"] = (frame[["fip50", "fip120", "fip250"]] < 0).sum(axis=1)
     frame["triple_rps90"] = (frame[["rps50", "rps120", "rps250"]] >= 90).all(axis=1)
-    frame["trend_bull"] = (frame["close"] > frame["ma50"]) & (frame["ma50"] > frame["ma120"]) & (frame["ma120"] > frame["ma200"])
+    frame["trend_bull"] = (frame["close"] > frame["_ma50"]) & (frame["_ma50"] > frame["_ma120"]) & (frame["_ma120"] > frame["_ma200"])
     frame["smooth_strength"] = (frame["composite_rps"] >= 90) & (frame["fip_negative_count"] == 3) & (frame["market_cap_yi"] >= 50)
     frame["in_watchlist"] = frame["code"].isin(watch_codes) if watch_codes else False
+    # 内部用的 _ma* 不写入前端 JSON，trend_bull 已计算完毕
+    for c in ["_ma20", "_ma50", "_ma120", "_ma200"]:
+        if c in frame.columns:
+            frame.drop(columns=c, inplace=True)
     for c in [f"rps{w}" for w in WINDOWS] + ["composite_rps"]:
         frame[c] = frame[c].round(2)
 
