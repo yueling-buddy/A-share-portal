@@ -411,9 +411,13 @@ def compute_sector(records, asof):
 
     sdf = pd.DataFrame(rows)
     # 排名：各行业「市值加权区间收益」降序名次（涨幅最高 = 第 1 名）
+    # 强度：RPS 式百分位（涨幅最高 ≈ 100，与个股 RPS 口径一致）
     for k in SECTOR_RET_COLS:
         c = k + "_cw"                       # k 已是 ret1w/ret1m/ret3m/ret6m
-        sdf["rank" + k[3:]] = sdf[c].rank(ascending=False, method="first").astype(int)
+        rank_col = "rank" + k[3:]
+        str_col = "str" + k[3:]
+        sdf[rank_col] = sdf[c].rank(ascending=False, method="first").astype(int)
+        sdf[str_col] = (sdf[c].rank(pct=True, method="average") * 100.0).round(1)
     for c in ["ret1w_cw", "ret1m_cw", "ret3m_cw", "ret6m_cw"]:
         if c in sdf.columns:
             sdf[c] = sdf[c].round(2)
@@ -421,10 +425,44 @@ def compute_sector(records, asof):
     return sdf.replace({np.nan: None}).to_dict(orient="records"), asof
 
 
+def _lookup_hist_rank1m(hist, industry, asof, days_ago):
+    """从历史快照找 industry 的 1M 排名，取 asof - days_ago 之前最近一个有数据的日子。"""
+    if not hist or not asof or not industry:
+        return None
+    try:
+        target = pd.Timestamp(asof).date() - pd.Timedelta(days=days_ago)
+    except Exception:
+        return None
+    valid_dates = sorted([
+        d for d in hist.keys()
+        if pd.Timestamp(d).date() <= target
+    ])
+    if not valid_dates:
+        return None
+    rec = hist[valid_dates[-1]].get(industry)
+    if not rec:
+        return None
+    return rec.get("rank1m")
+
+
 def write_sector(records, asof, source_desc):
     if not records:
         log_err("无板块数据可写（sector_rps.json 未生成）")
         return
+    # 读取历史快照，附加 1M 排名的历史值（1周前 / 3月前 / 6月前）
+    hist = {}
+    if SECTOR_HISTORY_JSON.exists():
+        try:
+            hist = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
+        except Exception as e:
+            log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，历史排名置空: {repr(e)[:160]}")
+            hist = {}
+    for r in records:
+        ind = r.get("industry")
+        r["rank1m_1w_ago"] = _lookup_hist_rank1m(hist, ind, asof, 7)
+        r["rank1m_3m_ago"] = _lookup_hist_rank1m(hist, ind, asof, 90)
+        r["rank1m_6m_ago"] = _lookup_hist_rank1m(hist, ind, asof, 180)
+
     meta = {
         "asof": asof,
         "generated_at": datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -434,8 +472,10 @@ def write_sector(records, asof, source_desc):
         "source": source_desc,
         "formula": {
             "排名口径": "各行业「市值加权区间收益」在全部行业中的降序名次：涨幅最高=第1名，依次递增",
+            "强度口径": "各行业「市值加权区间收益」的横截面百分位×100，与个股RPS一致：涨幅最高≈100",
             "区间窗口": "1周 / 1月 / 3月 / 6月（与个股区间收益口径一致）",
             "市值加权收益": "行业内成分股按总市值加权平均的区间收益率（已剔除等权口径）",
+            "历史1M排名": "取 asof-7日/90日/180日之前最近一个交易日快照中的 1M 排名",
         },
     }
     SECTOR_JSON.write_text(
@@ -444,13 +484,13 @@ def write_sector(records, asof, source_desc):
     )
     # 历史快照（按日累积，供板块历史排名走势图使用；同 asof 覆盖，每天 1 个点）
     try:
-        write_sector_history(records, asof)
+        write_sector_history(records, asof, existing_hist=hist)
     except Exception as e:
         log_err(f"板块历史快照写入失败（不影响板块RPS）: {repr(e)[:200]}")
     print(f"已生成 {SECTOR_JSON}（{len(records)} 个行业）")
 
 
-def write_sector_history(records, asof):
+def write_sector_history(records, asof, existing_hist=None):
     """把当日板块区间涨幅排名截面快照追加进历史文件。
 
     - 以 asof 交易日为键，覆盖写入（intraday 多次运行同键更新，close 定稿）；
@@ -472,13 +512,16 @@ def write_sector_history(records, asof):
             "ret6m_cw": r.get("ret6m_cw"), "rank6m": r.get("rank6m"),
             "n_stocks": r.get("n_stocks"), "n_strong": r.get("n_strong"),
         }
-    hist = {}
-    if SECTOR_HISTORY_JSON.exists():
-        try:
-            hist = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
-        except Exception as e:
-            log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，重建: {repr(e)[:160]}")
-            hist = {}
+    if existing_hist is not None:
+        hist = existing_hist
+    else:
+        hist = {}
+        if SECTOR_HISTORY_JSON.exists():
+            try:
+                hist = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
+            except Exception as e:
+                log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，重建: {repr(e)[:160]}")
+                hist = {}
     hist[asof] = today
     keys = sorted(hist.keys())
     if len(keys) > MAX_HISTORY_DATES:
@@ -960,6 +1003,13 @@ def main():
             asof = payload["meta"]["asof"]
             sector_records, _ = compute_sector(records, asof)
             write_sector(sector_records, asof, payload["meta"].get("source", "复用 rps.json"))
+            if TEMPLATE.exists():
+                html = TEMPLATE.read_text(encoding="utf-8")
+                html = (html.replace("__ASOF__", asof)
+                            .replace("__GENERATED_AT__", datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S"))
+                            .replace("__QUOTE_TIME__", payload["meta"].get("quote_time") or "—"))
+                INDEX_HTML.write_text(html, encoding="utf-8")
+                print(f"已生成 {INDEX_HTML}")
         except Exception as e:
             log_err(f"sector-only 失败: {repr(e)[:200]}")
             sys.exit(1)

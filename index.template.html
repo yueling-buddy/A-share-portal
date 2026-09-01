@@ -148,21 +148,29 @@ Promise.all([
   $('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}｜行情时间 ${_qt}`;
   $('note').innerHTML=`数据源：${META.source}，截至 ${META.asof}；${META.stock_pool_note}；${META.market_cap_note}。<b>FIP 的正负必须结合区间收益方向理解。</b>`;
   buildHead();computeKpis();apply();
-  if(S){SECTORMETA=S.meta;SECTORDATA=S.data;buildSectorHead();$('sectorStatus').textContent=`${SECTORMETA.count} 个行业｜截至 ${SECTORMETA.asof}`;$('sectornote').innerHTML=`板块排名 = 各行业「市值加权区间收益」在全部行业中的降序名次（涨幅最高 = 第 1 名）。区间：1周 / 1月 / 3月 / 6月；已剔除等权口径。数据截至 ${SECTORMETA.asof}。`;}
+  if(S){SECTORMETA=S.meta;SECTORDATA=S.data;buildSectorHead();$('sectorStatus').textContent=`${SECTORMETA.count} 个行业｜截至 ${SECTORMETA.asof}`;$('sectornote').innerHTML=`板块强度 = 各行业「市值加权区间收益」的横截面百分位×100（与个股RPS一致，越高越强）；排名 = 降序名次（第1名=涨幅最高）。历史1M排名取对应日期前最近交易日快照。数据截至 ${SECTORMETA.asof}。`;}
   if(H)loadSectorHistory(H);
   populateHistorySelect();
   drawHistory();
 }).catch(e=>{$('dataStatus').textContent='数据加载失败';document.querySelector('.table-scroll').innerHTML=`<div class="error">${e}<br>请通过 GitHub Pages 或本地 HTTP 服务打开，不要直接双击 file://。</div>`;});
 
 // ---------- 板块 RPS ----------
-let SECTORDATA=[],SECTORMETA={},srows=[],sSortKey='rank6m',sSortDir=1,secHighlight=null;
+let SECTORDATA=[],SECTORMETA={},srows=[],sSortKey='str6m',sSortDir=-1,secHighlight=null;
 const SECTOR_COLS=[
  ['industry','行业','str'],
- ['ret1w_cw','1周涨幅%','chg'],['rank1w','1周排名','rank'],
- ['ret1m_cw','1月涨幅%','chg'],['rank1m','1月排名','rank'],
- ['ret3m_cw','3月涨幅%','chg'],['rank3m','3月排名','rank'],
- ['ret6m_cw','6月涨幅%','chg'],['rank6m','6月排名','rank'],
- ['n_stocks','成分股','num'],['n_strong','强势股','num'],['top_name','领涨股','str']
+ ['str1w','1周强度','rps'],
+ ['str1m','1月强度','rps'],
+ ['str3m','3月强度','rps'],
+ ['str6m','6月强度','rps'],
+ ['rank1m','排名(1M)','rank'],
+ ['rank1m_1w_ago','1M排名-1周前','rank'],
+ ['rank1m_3m_ago','1M排名-3月前','rank'],
+ ['rank1m_6m_ago','1M排名-6月前','rank'],
+ ['n_stocks','成分股','num'],['n_strong','强势股','num'],['top_name','领涨股','str'],
+ ['ret1w_cw','1周涨幅%','chg'],
+ ['ret1m_cw','1月涨幅%','chg'],
+ ['ret3m_cw','3月涨幅%','chg'],
+ ['ret6m_cw','6月涨幅%','chg']
 ];
 function fmtS(v,t){if(v===null||v===undefined||Number.isNaN(v))return '—';if(t==='num')return Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});if(t==='rps')return Number(v).toFixed(1);if(t==='chg')return (Number(v)>=0?'+':'')+Number(v).toFixed(2);if(t==='rank')return Number(v).toLocaleString('zh-CN');if(t==='html')return String(v);return String(v);}
 function fmtRankCell(ret,rank){if(ret==null||rank==null)return '—';const s=(Number(ret)>=0?'+':'')+Number(ret).toFixed(1)+'%';return s+' <span class="rk">#'+Number(rank)+'</span>';}
