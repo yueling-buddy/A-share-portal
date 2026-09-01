@@ -111,6 +111,10 @@ td.rankcell{text-align:center;font-variant-numeric:tabular-nums}
       </div>
       <div id="historyChart" class="chart"></div>
     </section>
+    <section class="panel" id="histStocksPanel" style="display:none">
+      <div class="panel-head"><span>板块成分股：<b id="histStocksName">—</b></span><span id="histStocksStatus"></span></div>
+      <div class="table-scroll"><table id="histStocksTbl"><thead><tr></tr></thead><tbody></tbody></table></div>
+    </section>
   </div>
 <div class="modal" id="detailModal"><div class="modal-card"><div class="modal-head"><h2 id="detailTitle"></h2><button class="close" onclick="closeDetail()">×</button></div><div class="detail-grid" id="detailGrid"></div><div class="detail-sector" id="detailSector" style="display:none"></div><div class="charts"><div id="priceChart" class="chart"></div><div id="factorChart" class="chart"></div></div></div></div>
 <div class="modal" id="manualModal"><div class="modal-card"><div class="modal-head"><h2>指标口径与使用说明</h2><button class="close" onclick="closeManual()">×</button></div><div class="manual"><h3>RPS（横截面相对强度）</h3><p>RPS50 / 120 / 250 = 对应交易日窗口收益率在当前有效 A 股股票池中的百分位 ×100。综合RPS = <code>0.3×RPS50 + 0.3×RPS120 + 0.4×RPS250</code>。数值越高，仅表示过去对应周期相对更强。</p><h3>FIP（动量路径质量）</h3><p>FIP_N = <code>sign(N日收益) × (下跌日数−上涨日数) / N</code>。对于正收益股票，FIP 越负，代表上涨天数越多、路径相对平滑；负收益股票需结合方向理解，不能机械地只看“越负越好”。</p><h3>辅助字段</h3><p>提供 MA20/50/120/200、距均线、距前一交易日止250日最高价、量比、20日年化波动率、RSI14、周MACD柱、区间涨幅、总市值等，结构参考美股选股盘。</p><h3>数据边界</h3><p class="warn">K线为腾讯前复权日线本地缓存；总市值是缓存快照，并非历史市值。数据截至页面顶部日期，未接入实时盘中行情、财务指标与换手率（行业分类已纳入）。</p><p><b>免责声明：</b>本工具仅用于量化研究与信息筛选，不构成投资建议。</p></div></div></div>
@@ -185,8 +189,36 @@ function jumpToSector(ind){if(!SECTORDATA.length)return;closeDetail();secHighlig
 function jumpToHistory(ind){if(!SECTORDATA.length)return;closeDetail();$('histInd').value=ind;switchView('history');}
 function loadSectorHistory(H){SECTORHISTORY={dates:[],byDate:{},industries:[]};if(!H)return;const dates=Object.keys(H).sort();const indset={};dates.forEach(d=>{SECTORHISTORY.byDate[d]=H[d];Object.keys(H[d]).forEach(k=>indset[k]=1);});SECTORHISTORY.dates=dates;SECTORHISTORY.industries=Object.keys(indset).sort();}
 function populateHistorySelect(){const sel=$('histInd');const cur=sel.value;const inds=SECTORDATA.length?SECTORDATA.map(r=>r.industry):SECTORHISTORY.industries;sel.innerHTML=inds.map(x=>`<option value="${x}">${x}</option>`).join('');if(cur&&inds.includes(cur))sel.value=cur;}
+const HIST_STOCK_COLS=[
+ ['code','代码','str'],['name','名称','str'],['close','收盘价','num'],['chg_pct','涨跌幅%','chg'],
+ ['composite_rps','综合RPS','rps'],['rps50','RPS50','rps'],['rps120','RPS120','rps'],['rps250','RPS250','rps'],
+ ['fip250','FIP250','fip'],['dist_high_250','距250日高%','chg'],['market_cap_yi','总市值(亿)','num'],
+ ['ret1w','1周%','chg'],['ret1m','1月%','chg'],['ret3m','3月%','chg'],['ret6m','6月%','chg']
+];
+let hstSortKey='composite_rps',hstSortDir=-1;
+function renderHistoryStocks(ind){
+  const panel=$('histStocksPanel');
+  if(!panel)return;
+  if(!ind){panel.style.display='none';return;}
+  const list=DATA.filter(r=>r.industry===ind);
+  $('histStocksName').textContent=ind;
+  const lbl=HIST_STOCK_COLS.find(x=>x[0]===hstSortKey)?.[1]||hstSortKey;
+  $('histStocksStatus').textContent=`${list.length} 只｜综合RPS≥90 ${list.filter(r=>r.composite_rps>=90).length} 只｜按 ${lbl} ${hstSortDir<0?'降序':'升序'}（点击表头可排序）`;
+  list.sort((x,y)=>{let a=x[hstSortKey],b=y[hstSortKey],ae=a===null||a===undefined,be=b===null||b===undefined;if(ae&&be)return 0;if(ae)return 1;if(be)return -1;if(typeof a==='string')return hstSortDir*a.localeCompare(b,'zh-CN');return hstSortDir*(a-b);});
+  const tr=$('histStocksTbl').querySelector('thead tr');
+  tr.innerHTML=HIST_STOCK_COLS.map(([k,l])=>`<th data-k="${k}">${l}<span class="arr"></span></th>`).join('');
+  tr.querySelectorAll('th').forEach(th=>th.onclick=()=>{const k=th.dataset.k;if(hstSortKey===k)hstSortDir*=-1;else{hstSortKey=k;hstSortDir=-1;}renderHistoryStocks(ind);});
+  $('histStocksTbl').querySelector('tbody').innerHTML=list.map(r=>'<tr>'+HIST_STOCK_COLS.map(([k,,t])=>{
+    let inner=fmt(r[k],t);
+    if(k==='name')inner=`<a class="name-link" href="#" data-code="${r.code}">${inner}</a>`;
+    return `<td class="${cls(r[k],t)} col-${k}"${t==='rps'?` style="${heat(r[k])}"`:''}>${inner}</td>`;
+  }).join('')+'</tr>').join('');
+  $('histStocksTbl').querySelectorAll('.name-link').forEach(a=>a.onclick=e=>{e.preventDefault();openDetail(a.dataset.code);});
+  tr.querySelectorAll('th').forEach(th=>{const arr=th.querySelector('.arr');arr.textContent=th.dataset.k===hstSortKey?(hstSortDir<0?' ▼':' ▲'):'';});
+  panel.style.display='';
+}
 function drawHistory(){const ind=$('histInd').value;const metric=$('histWin').value;const note=$('historyNote'),status=$('historyStatus');const n=SECTORHISTORY.dates.length;
-  if(!ind||n===0){status.textContent='数据积累中';note.textContent='目前仅有 '+n+' 个周频快照；每周收盘定稿（周五）后会自动追加，走势图将随周数增加而成形。';if(historyChart)historyChart.clear();return;}
+  if(!ind||n===0){status.textContent='数据积累中';note.textContent='目前仅有 '+n+' 个周频快照；每周收盘定稿（周五）后会自动追加，走势图将随周数增加而成形。';if(historyChart)historyChart.clear();renderHistoryStocks(ind);return;}
   if(n===1){note.textContent='已积累 1 个周频快照（'+SECTORHISTORY.dates[0]+'）；继续每周刷新即可生成走势。';}
   else{note.textContent='已积累 '+n+' 个周频快照（'+SECTORHISTORY.dates[0]+' → '+SECTORHISTORY.dates[n-1]+'，每周最后一个交易日）。';}
   const key=metric==='str'?'str1m':'rank1m';const lbl=metric==='str'?'1月强度':'1月排名';
@@ -197,6 +229,7 @@ function drawHistory(){const ind=$('histInd').value;const metric=$('histWin').va
   historyChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:[lbl],top:8},grid:{left:68,right:30,top:46,bottom:70},xAxis:{type:'category',data:dates,axisLabel:{interval:7,rotate:40,fontSize:11,formatter:d=>d.slice(0,7)}},
     yAxis:[{type:'value',name:lbl,nameLocation:'end',nameGap:8,min:metric==='rank'?1:0,max:metric==='rank'?Math.max(2,tot):100,inverse:metric==='rank',position:'left',splitNumber:5,axisLabel:{formatter: metric==='rank'?'第{value}':'{value}'}}],
     series:[{name:lbl,type:'line',showSymbol:true,symbolSize:6,data:vals,lineStyle:{color:'#f59e0b',width:2},itemStyle:{color:'#f59e0b'}}]},true);
+  renderHistoryStocks(ind);
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 document.querySelectorAll('#sectorPresets .preset').forEach(b=>b.onclick=()=>secPreset(b.dataset.sp));
