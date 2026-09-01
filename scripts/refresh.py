@@ -89,7 +89,7 @@ except Exception:
 
 
 def log_err(msg: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}\n"
     try:
         with ERROR_LOG.open("a", encoding="utf-8") as f:
@@ -111,7 +111,7 @@ def write_run_log(**kw):
     """
     try:
         rec = {
-            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ts": datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S"),
             "host": "cloud" if os.environ.get("GITHUB_ACTIONS") else "local",
             "spot_attempts": list(SPOT_DIAG["attempts"]),
             "spot_source": SPOT_DIAG["source"],
@@ -422,7 +422,7 @@ def write_sector(records, asof, source_desc):
         return
     meta = {
         "asof": asof,
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S"),
         "count": len(records),
         "min_stocks_per_sector": SECTOR_MIN_STOCKS,
         "source": source_desc,
@@ -769,7 +769,7 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
     } for r in records]
     meta = {
         "asof": asof,
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S"),
         "count": len(records),
         "universe_count": int(universe_count),
         "source": source_desc,
