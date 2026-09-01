@@ -68,7 +68,7 @@ META_JSON = DATA_DIR / "meta.json"
 SECTOR_JSON = DATA_DIR / "sector_rps.json"
 SECTOR_HISTORY_JSON = DATA_DIR / "sector_rps_history.json"   # 板块 RPS 逐日快照（供历史排名走势图）
 RUN_LOG_JSON = DATA_DIR / "cloud_run_log.json"               # 运行诊断（云端可观测：行情源/行数/asof/守卫）
-MAX_HISTORY_DATES = 600                                     # 最多保留约 2.3 年交易日
+MAX_HISTORY_WEEKS = 260                                     # 最多保留约 5 年周快照（周频）
 INDEX_HTML = ROOT / "index.html"
 ERROR_LOG = DATA_DIR / "error.log"
 KLINE_CACHE = DATA_DIR / "kline_cache.parquet"         # 运行时缓存（盘中用）
@@ -362,6 +362,36 @@ SECTOR_RET_COLS = {                                # 板块区间收益窗口（
 }
 
 
+# ---------------- 板块周频历史 ----------------
+_TRADING_DATES_CACHE = None
+
+def get_trading_dates():
+    """返回本地 K 线缓存中的全部交易日（去重、升序），用于确定周频记录点。"""
+    global _TRADING_DATES_CACHE
+    if _TRADING_DATES_CACHE is None:
+        try:
+            kp = pd.read_parquet(KLINE_CACHE, columns=["date"])
+            _TRADING_DATES_CACHE = sorted(
+                pd.to_datetime(kp["date"]).dt.normalize().unique().tolist()
+            )
+        except Exception as e:
+            log_err(f"读取交易日历失败: {repr(e)[:160]}")
+            _TRADING_DATES_CACHE = []
+    return _TRADING_DATES_CACHE
+
+def week_end_trading_date(d):
+    """返回包含 d 的那一周（周一~周日）内的最后一个交易日（周频记录点）。
+    周五为交易日则返回周五；周五休假则返回周四等更早的交易日。"""
+    d = pd.Timestamp(d).normalize()
+    monday = d - pd.Timedelta(days=d.weekday())
+    sunday = monday + pd.Timedelta(days=6)
+    tds = get_trading_dates()
+    if not tds:
+        return d
+    week_tds = [t for t in tds if monday <= t <= sunday]
+    return max(week_tds) if week_tds else d
+
+
 def compute_sector(records, asof):
     """从个股 records 聚合出板块（行业）的区间涨幅排名。
 
@@ -425,21 +455,21 @@ def compute_sector(records, asof):
     return sdf.replace({np.nan: None}).to_dict(orient="records"), asof
 
 
-def _lookup_hist_rank1m(hist, industry, asof, days_ago):
-    """从历史快照找 industry 的 1M 排名，取 asof - days_ago 之前最近一个有数据的日子。"""
+def _lookup_hist_rank1m(hist, industry, asof, weeks_ago):
+    """从历史周频快照找 industry 的 1M 排名，取 asof 所在周之前第 weeks_ago 个周的快照。"""
     if not hist or not asof or not industry:
         return None
     try:
-        target = pd.Timestamp(asof).date() - pd.Timedelta(days=days_ago)
+        asof_ts = pd.Timestamp(asof).normalize()
     except Exception:
         return None
-    valid_dates = sorted([
-        d for d in hist.keys()
-        if pd.Timestamp(d).date() <= target
-    ])
-    if not valid_dates:
+    valid = sorted(d for d in hist.keys() if pd.Timestamp(d).normalize() <= asof_ts)
+    if not valid:
         return None
-    rec = hist[valid_dates[-1]].get(industry)
+    idx = len(valid) - 1 - weeks_ago
+    if idx < 0:
+        return None
+    rec = hist[valid[idx]].get(industry)
     if not rec:
         return None
     return rec.get("rank1m")
@@ -459,9 +489,9 @@ def write_sector(records, asof, source_desc):
             hist = {}
     for r in records:
         ind = r.get("industry")
-        r["rank1m_1w_ago"] = _lookup_hist_rank1m(hist, ind, asof, 7)
-        r["rank1m_3m_ago"] = _lookup_hist_rank1m(hist, ind, asof, 90)
-        r["rank1m_6m_ago"] = _lookup_hist_rank1m(hist, ind, asof, 180)
+        r["rank1m_1w_ago"] = _lookup_hist_rank1m(hist, ind, asof, 1)
+        r["rank1m_3m_ago"] = _lookup_hist_rank1m(hist, ind, asof, 13)
+        r["rank1m_6m_ago"] = _lookup_hist_rank1m(hist, ind, asof, 26)
 
     meta = {
         "asof": asof,
@@ -475,7 +505,7 @@ def write_sector(records, asof, source_desc):
             "强度口径": "各行业「市值加权区间收益」的横截面百分位×100，与个股RPS一致：涨幅最高≈100",
             "区间窗口": "1周 / 1月 / 3月 / 6月（与个股区间收益口径一致）",
             "市值加权收益": "行业内成分股按总市值加权平均的区间收益率（已剔除等权口径）",
-            "历史1M排名": "取 asof-7日/90日/180日之前最近一个交易日快照中的 1M 排名",
+            "历史1M排名": "取历史周频快照（每周最后一个交易日）中，asof 所在周之前第 1/13/26 个周的 1M 排名（约 上周 / 3月前 / 6月前）",
         },
     }
     SECTOR_JSON.write_text(
@@ -491,26 +521,30 @@ def write_sector(records, asof, source_desc):
 
 
 def write_sector_history(records, asof, existing_hist=None):
-    """把当日板块区间涨幅排名截面快照追加进历史文件。
+    """把板块 1M 排名的「周频」快照追加进历史文件。
 
-    - 以 asof 交易日为键，覆盖写入（intraday 多次运行同键更新，close 定稿）；
-      因此每个交易日最终只保留 1 个最新点。
-    - 每天记录每个行业的：1周/1月/3月/6月 市值加权涨幅与排名 / 成分股数 / 强RPS股数。
-    - 仅保留最近 MAX_HISTORY_DATES 个交易日（约 2.3 年），避免无限膨胀。
+    - 仅在 asof 为该周最后一个交易日（周频记录点）时才写入，避免重复；
+      因此每个自然周最终只保留 1 个最新点（收盘定稿覆盖）。
+    - 每个周点记录每个行业的：1M 排名 / 1M 强度 / 1M 市值加权涨幅 / 成分股数。
+    - 仅保留最近 MAX_HISTORY_WEEKS 个周，避免无限膨胀。
     """
     if not records:
         return
+    asof_ts = pd.Timestamp(asof).normalize()
+    wk = week_end_trading_date(asof)
+    if asof_ts != wk:
+        return  # 非周频记录点（周内普通交易日），跳过
+    wk_str = wk.strftime("%Y-%m-%d")
     today = {}
     for r in records:
         ind = r.get("industry")
         if not ind:
             continue
         today[ind] = {
-            "ret1w_cw": r.get("ret1w_cw"), "rank1w": r.get("rank1w"),
-            "ret1m_cw": r.get("ret1m_cw"), "rank1m": r.get("rank1m"),
-            "ret3m_cw": r.get("ret3m_cw"), "rank3m": r.get("rank3m"),
-            "ret6m_cw": r.get("ret6m_cw"), "rank6m": r.get("rank6m"),
-            "n_stocks": r.get("n_stocks"), "n_strong": r.get("n_strong"),
+            "rank1m": r.get("rank1m"),
+            "str1m": r.get("str1m"),
+            "ret1m_cw": r.get("ret1m_cw"),
+            "n_stocks": r.get("n_stocks"),
         }
     if existing_hist is not None:
         hist = existing_hist
@@ -522,16 +556,16 @@ def write_sector_history(records, asof, existing_hist=None):
             except Exception as e:
                 log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，重建: {repr(e)[:160]}")
                 hist = {}
-    hist[asof] = today
+    hist[wk_str] = today
     keys = sorted(hist.keys())
-    if len(keys) > MAX_HISTORY_DATES:
-        for k in keys[:-MAX_HISTORY_DATES]:
+    if len(keys) > MAX_HISTORY_WEEKS:
+        for k in keys[:-MAX_HISTORY_WEEKS]:
             hist.pop(k, None)
     SECTOR_HISTORY_JSON.write_text(
         json.dumps(hist, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
-    print(f"已写入板块历史快照 {SECTOR_HISTORY_JSON.name}（截至 {asof}，共 {len(hist)} 个交易日）")
+    print(f"已写入板块周频历史快照 {SECTOR_HISTORY_JSON.name}（周 {wk_str}，共 {len(hist)} 周）")
 
 
 # ---------------- 数据获取 ----------------

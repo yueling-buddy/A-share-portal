@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""基于本地 K 线缓存回溯补全板块历史排名数据。
+"""基于本地 K 线缓存回溯补全板块历史排名数据（周频）。
 
 用法:
     python scripts/backfill_sector_history.py [--start 2025-04-02] [--end 2026-08-31]
 
 说明:
     - 直接读 data/kline_cache.parquet + data/industry.csv + data/mcap.csv + data/codes.csv
-    - 按交易日、行业聚合市值加权区间收益（1周/1月/3月/6月）
-    - 在每个交易日截面内计算各行业名次（涨幅最高=第1名）
-    - 结果合并进 data/sector_rps_history.json（同日期覆盖）
-    - 仅补齐收盘日截面；盘中 09-01 及之后仍由 refresh.py 实时产出
+    - 按周聚合：每个自然周仅取其最后一个交易日截面，计算各行业「市值加权 1月收益」的
+      名次（涨幅最高=第1名）与 RPS 式强度（横截面百分位×100）
+    - 每条周快照只记录各板块的 1M 排名 / 1M 强度 / 1M 涨幅 / 成分股数
+    - 结果合并进 data/sector_rps_history.json（按周频键覆盖；保留 end 之后的既有周）
+    - 仅补齐历史周；本周及之后仍由 refresh.py 在每周收盘定稿时实时产出
 """
 from __future__ import annotations
 
@@ -59,16 +60,12 @@ def load_data():
 
 
 def compute_sector_for_date(group: pd.DataFrame) -> pd.DataFrame:
-    """对单个交易日的股票截面，按行业聚合并计算排名。"""
-    # 行业内市值加权收益
+    """对单个交易日的股票截面，按行业聚合 1月收益并排名（含 RPS 式强度）。"""
     def _industry_agg(g):
         tot = g["mcap"].sum()
         w = g["mcap"] / tot if tot > 0 else pd.Series([1.0 / len(g)] * len(g), index=g.index)
         return pd.Series({
-            "ret1w_cw": (g["ret1w"] * w).sum() if g["ret1w"].notna().any() else np.nan,
             "ret1m_cw": (g["ret1m"] * w).sum() if g["ret1m"].notna().any() else np.nan,
-            "ret3m_cw": (g["ret3m"] * w).sum() if g["ret3m"].notna().any() else np.nan,
-            "ret6m_cw": (g["ret6m"] * w).sum() if g["ret6m"].notna().any() else np.nan,
             "n_stocks": len(g),
         })
 
@@ -79,14 +76,22 @@ def compute_sector_for_date(group: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     ind = group.groupby("industry").apply(_industry_agg, include_groups=False).reset_index()
-    for win in ["1w", "1m", "3m", "6m"]:
-        col = f"ret{win}_cw"
-        rank_col = f"rank{win}"
-        ind[col] = pd.to_numeric(ind[col], errors="coerce")
-        # 涨幅最高 = 第 1 名
-        ind[rank_col] = ind[col].rank(ascending=False, method="first").astype("Int64")
-        ind[col] = ind[col].round(2)
+    ind["ret1m_cw"] = pd.to_numeric(ind["ret1m_cw"], errors="coerce")
+    # 涨幅最高 = 第 1 名
+    ind["rank1m"] = ind["ret1m_cw"].rank(ascending=False, method="first").astype("Int64")
+    # RPS 式强度：横截面百分位 × 100
+    ind["str1m"] = (ind["ret1m_cw"].rank(pct=True, method="average") * 100.0).round(1)
+    ind["ret1m_cw"] = ind["ret1m_cw"].round(2)
     return ind
+
+
+def week_end_trading_date(tds, d):
+    """返回包含 d 的那一周（周一~周日）内的最后一个交易日。"""
+    d = pd.Timestamp(d).normalize()
+    monday = d - pd.Timedelta(days=d.weekday())
+    sunday = monday + pd.Timedelta(days=6)
+    week_tds = [t for t in tds if monday <= t <= sunday]
+    return max(week_tds) if week_tds else d
 
 
 def main():
@@ -98,59 +103,70 @@ def main():
 
     kline = load_data()
 
-    # 计算每只股票在每个交易日的区间收益（用未来值对齐：当前 close vs N 个交易日前 close）
-    print("计算个股区间收益 ...")
+    # 计算每只股票在每个交易日的 1月 区间收益（当前 close vs 20 个交易日前 close）
+    print("计算个股 1月 区间收益 ...")
     kline = kline.sort_values(["code", "date"])
-    for periods, label in [(5, "1w"), (20, "1m"), (60, "3m"), (120, "6m")]:
-        kline[f"ret{label}"] = (
-            kline.groupby("code")["close"]
-            .pct_change(periods=periods, fill_method=None) * 100.0
-        )
+    kline["ret1m"] = (
+        kline.groupby("code")["close"]
+        .pct_change(periods=20, fill_method=None) * 100.0
+    )
 
-    # 过滤日期范围
     start = pd.Timestamp(args.start)
     end = pd.Timestamp(args.end)
     kline = kline[(kline["date"] >= start) & (kline["date"] <= end)].copy()
-    dates = sorted(kline["date"].unique())
-    print(f"待回溯交易日: {len(dates)} 个 ({str(dates[0].date())} ~ {str(dates[-1].date())})")
+    dates = sorted(pd.to_datetime(kline["date"]).dt.normalize().unique().tolist())
+    print(f"待回溯交易日: {len(dates)} 个 ({dates[0].date()} ~ {dates[-1].date()})")
 
-    # 读取已有历史
+    # 每个交易日 -> 其所在周的最后一个交易日（周频记录点）
+    date2wk = {d: week_end_trading_date(dates, d) for d in dates}
+    # 每个周频记录点 -> 该周代表性交易日（= 该周最大交易日）
+    wk_rep = {}
+    for d in dates:
+        wk = date2wk[d]
+        if wk not in wk_rep or d > wk_rep[wk]:
+            wk_rep[wk] = d
+    weeks = sorted(wk_rep.keys())
+    print(f"待回溯周数: {len(weeks)} 周 ({weeks[0].date()} ~ {weeks[-1].date()})")
+
+    # 读取已有历史：仅保留 end 之后、且已是新周频结构（含 str1m）的未来周，
+    # 避免覆盖云端已写入的更新周；区间内的旧「逐日」条目一律丢弃后由本次重写。
     hist = {}
     if SECTOR_HISTORY_JSON.exists():
         try:
-            hist = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
-            print(f"已有历史: {len(hist)} 个交易日")
+            old = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
+            kept = []
+            for k, v in old.items():
+                if (pd.Timestamp(k).normalize() > end and isinstance(v, dict) and v
+                        and "str1m" in next(iter(v.values()))):
+                    kept.append(k)
+            for k in kept:
+                hist[k] = old[k]
+            print(f"已有历史: {len(old)} 条；保留新结构未来周 {len(kept)} 条，区间内 {len(old)-len(kept)} 条将重写")
         except Exception as e:
             print(f"读取已有历史失败，重建: {e}")
             hist = {}
 
-    # 逐日计算
     new_count = 0
-    for d in dates:
-        dstr = pd.Timestamp(d).strftime("%Y-%m-%d")
-        day_df = kline[kline["date"] == d]
+    for wk in weeks:
+        rep = wk_rep[wk]
+        day_df = kline[kline["date"] == rep]
         sector_df = compute_sector_for_date(day_df)
         if sector_df.empty:
             continue
         today = {}
         for _, r in sector_df.iterrows():
             today[r["industry"]] = {
-                "ret1w_cw": None if pd.isna(r["ret1w_cw"]) else float(r["ret1w_cw"]),
-                "rank1w": None if pd.isna(r["rank1w"]) else int(r["rank1w"]),
-                "ret1m_cw": None if pd.isna(r["ret1m_cw"]) else float(r["ret1m_cw"]),
                 "rank1m": None if pd.isna(r["rank1m"]) else int(r["rank1m"]),
-                "ret3m_cw": None if pd.isna(r["ret3m_cw"]) else float(r["ret3m_cw"]),
-                "rank3m": None if pd.isna(r["rank3m"]) else int(r["rank3m"]),
-                "ret6m_cw": None if pd.isna(r["ret6m_cw"]) else float(r["ret6m_cw"]),
-                "rank6m": None if pd.isna(r["rank6m"]) else int(r["rank6m"]),
+                "str1m": None if pd.isna(r["str1m"]) else float(r["str1m"]),
+                "ret1m_cw": None if pd.isna(r["ret1m_cw"]) else float(r["ret1m_cw"]),
                 "n_stocks": int(r["n_stocks"]),
-                "n_strong": None,   # 回溯不计算 composite_rps 强势股数
             }
-        if dstr not in hist:
+        wk_str = wk.strftime("%Y-%m-%d")
+        if wk_str not in hist:
             new_count += 1
-        hist[dstr] = today
+        hist[wk_str] = today
 
-    print(f"新增/覆盖交易日: {new_count} 个；历史总交易日: {len(hist)} 个")
+    print(f"新增/覆盖周: {new_count} 个；历史总周数: {len(hist)} 个")
 
     if args.dry_run:
         print("dry-run 模式，不写入文件")

@@ -39,7 +39,7 @@ td.rankcell{text-align:center;font-variant-numeric:tabular-nums}
 </head>
 <body>
 <div class="shell">
-  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p><span id="hdrTime">行情截至 2026-09-01 ｜ 行情时间 2026-09-01 11:36:00 ｜ 生成时间 2026-09-01 12:24:38</span> ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
+  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p><span id="hdrTime">行情截至 2026-09-01 ｜ 行情时间 2026-09-01 11:36:00 ｜ 生成时间 2026-09-01 13:40:52</span> ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
   <div class="tabs">
     <button class="tab active" data-view="stock">个股动量</button>
     <button class="tab" data-view="sector">板块RPS</button>
@@ -98,16 +98,14 @@ td.rankcell{text-align:center;font-variant-numeric:tabular-nums}
 </div>
   <div id="historyView" style="display:none">
     <section class="panel">
-      <div class="panel-head"><span>板块历史排名走势（每日收盘定稿累积）</span><span id="historyStatus">加载数据中…</span></div>
+      <div class="panel-head"><span>板块历史排名走势（周频：每周最后一个交易日记录各板块 1M 排名）</span><span id="historyStatus">加载数据中…</span></div>
       <div class="hist-bar">
         <label>行业：</label>
         <select id="histInd" onchange="drawHistory()"></select>
         <label>区间：</label>
         <select id="histWin" onchange="drawHistory()">
-          <option value="1w">1周</option>
-          <option value="1m">1月</option>
-          <option value="3m">3月</option>
-          <option value="6m" selected>6月</option>
+          <option value="rank" selected>排名(1M)</option>
+          <option value="str">强度(1M)</option>
         </select>
         <span class="note" id="historyNote"></span>
       </div>
@@ -148,7 +146,7 @@ Promise.all([
   $('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}｜行情时间 ${_qt}`;
   $('note').innerHTML=`数据源：${META.source}，截至 ${META.asof}；${META.stock_pool_note}；${META.market_cap_note}。<b>FIP 的正负必须结合区间收益方向理解。</b>`;
   buildHead();computeKpis();apply();
-  if(S){SECTORMETA=S.meta;SECTORDATA=S.data;buildSectorHead();$('sectorStatus').textContent=`${SECTORMETA.count} 个行业｜截至 ${SECTORMETA.asof}`;$('sectornote').innerHTML=`板块强度 = 各行业「市值加权区间收益」的横截面百分位×100（与个股RPS一致，越高越强）；排名 = 降序名次（第1名=涨幅最高）。历史1M排名取对应日期前最近交易日快照。数据截至 ${SECTORMETA.asof}。`;}
+  if(S){SECTORMETA=S.meta;SECTORDATA=S.data;buildSectorHead();$('sectorStatus').textContent=`${SECTORMETA.count} 个行业｜截至 ${SECTORMETA.asof}`;$('sectornote').innerHTML=`板块强度 = 各行业「市值加权区间收益」的横截面百分位×100（与个股RPS一致，越高越强）；排名 = 降序名次（第1名=涨幅最高）。历史1M排名取周频快照（每周最后一个交易日）中前 1/13/26 周的排名。数据截至 ${SECTORMETA.asof}。`;}
   if(H)loadSectorHistory(H);
   populateHistorySelect();
   drawHistory();
@@ -187,21 +185,18 @@ function jumpToSector(ind){if(!SECTORDATA.length)return;closeDetail();secHighlig
 function jumpToHistory(ind){if(!SECTORDATA.length)return;closeDetail();$('histInd').value=ind;switchView('history');}
 function loadSectorHistory(H){SECTORHISTORY={dates:[],byDate:{},industries:[]};if(!H)return;const dates=Object.keys(H).sort();const indset={};dates.forEach(d=>{SECTORHISTORY.byDate[d]=H[d];Object.keys(H[d]).forEach(k=>indset[k]=1);});SECTORHISTORY.dates=dates;SECTORHISTORY.industries=Object.keys(indset).sort();}
 function populateHistorySelect(){const sel=$('histInd');const cur=sel.value;const inds=SECTORDATA.length?SECTORDATA.map(r=>r.industry):SECTORHISTORY.industries;sel.innerHTML=inds.map(x=>`<option value="${x}">${x}</option>`).join('');if(cur&&inds.includes(cur))sel.value=cur;}
-function drawHistory(){const ind=$('histInd').value;const win=$('histWin').value;const winLbl={'1w':'1周','1m':'1月','3m':'3月','6m':'6月'}[win];const note=$('historyNote'),status=$('historyStatus');const n=SECTORHISTORY.dates.length;
-  if(!ind||n===0){status.textContent='数据积累中';note.textContent='目前仅有 '+n+' 个交易日快照；每日收盘定稿（15:10）后会自动追加，走势图将随天数增加而成形。';if(historyChart)historyChart.clear();return;}
-  if(n===1){note.textContent='已积累 1 个交易日（'+SECTORHISTORY.dates[0]+'）；继续每日刷新即可生成多日走势。';}
-  else{note.textContent='已积累 '+n+' 个交易日快照（'+SECTORHISTORY.dates[0]+' → '+SECTORHISTORY.dates[n-1]+'）。';}
-  const retKey='ret'+win+'_cw',rankKey='rank'+win;const dates=SECTORHISTORY.dates.slice();const rets=[],ranks=[];
-  dates.forEach(d=>{const row=SECTORHISTORY.byDate[d][ind];rets.push(row&&row[retKey]!=null?row[retKey]:null);});
-  const tot=SECTORHISTORY.industries.length;
-  dates.forEach(d=>{const rec=SECTORHISTORY.byDate[d];const arr=Object.entries(rec).filter(([k,v])=>v&&v[rankKey]!=null).sort((a,b)=>a[1][rankKey]-b[1][rankKey]);const idx=arr.findIndex(([k])=>k===ind);ranks.push(idx>=0?idx+1:null);});
-  const lastRow=SECTORHISTORY.byDate[dates[n-1]][ind];const lastRank=ranks[n-1];
-  status.innerHTML=`${ind}｜${winLbl}涨幅 <b>${lastRow&&lastRow[retKey]!=null?(lastRow[retKey]>=0?'+':'')+lastRow[retKey].toFixed(1)+'%':'—'}</b>｜${winLbl}排名 <b>${lastRank!=null?lastRank+' / '+tot:'—'}</b>`;
+function drawHistory(){const ind=$('histInd').value;const metric=$('histWin').value;const note=$('historyNote'),status=$('historyStatus');const n=SECTORHISTORY.dates.length;
+  if(!ind||n===0){status.textContent='数据积累中';note.textContent='目前仅有 '+n+' 个周频快照；每周收盘定稿（周五）后会自动追加，走势图将随周数增加而成形。';if(historyChart)historyChart.clear();return;}
+  if(n===1){note.textContent='已积累 1 个周频快照（'+SECTORHISTORY.dates[0]+'）；继续每周刷新即可生成走势。';}
+  else{note.textContent='已积累 '+n+' 个周频快照（'+SECTORHISTORY.dates[0]+' → '+SECTORHISTORY.dates[n-1]+'，每周最后一个交易日）。';}
+  const key=metric==='str'?'str1m':'rank1m';const lbl=metric==='str'?'1月强度':'1月排名';
+  const dates=SECTORHISTORY.dates.slice();const vals=dates.map(d=>{const row=SECTORHISTORY.byDate[d][ind];return (row&&row[key]!=null)?row[key]:null;});
+  const tot=SECTORHISTORY.industries.length;const lastVal=vals[n-1];
+  status.innerHTML=`${ind}｜最新周（${dates[n-1]}）${lbl} <b>${lastVal!=null?(metric==='str'?Number(lastVal).toFixed(1):lastVal+' / '+tot):'—'}</b>`;
   if(!historyChart)historyChart=echarts.init($('historyChart'));
-  historyChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:[winLbl+'涨幅%','全市场排名']},grid:{left:54,right:58,top:42,bottom:48},xAxis:{type:'category',data:dates,axisLabel:{hideOverlap:true}},
-    yAxis:[{type:'value',name:winLbl+'涨幅%',position:'left',axisLabel:{formatter:'{value}%'}},{type:'value',name:'排名',min:1,max:Math.max(2,tot),inverse:true,position:'right',axisLabel:{formatter:'第{value}'}}],
-    series:[{name:winLbl+'涨幅%',type:'line',showSymbol:true,symbolSize:6,data:rets,lineStyle:{color:'#2563eb',width:2},itemStyle:{color:'#2563eb'}},
-            {name:'全市场排名',type:'line',yAxisIndex:1,showSymbol:true,symbolSize:6,data:ranks,lineStyle:{color:'#f59e0b',width:2},itemStyle:{color:'#f59e0b'}}]},true);
+  historyChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:[lbl]},grid:{left:54,right:30,top:42,bottom:64},xAxis:{type:'category',data:dates,axisLabel:{hideOverlap:true,rotate:45}},
+    yAxis:[{type:'value',name:lbl,min:metric==='rank'?1:0,max:metric==='rank'?Math.max(2,tot):100,inverse:metric==='rank',position:'left',axisLabel:{formatter: metric==='rank'?'第{value}':'{value}'}}],
+    series:[{name:lbl,type:'line',showSymbol:true,symbolSize:6,data:vals,lineStyle:{color:'#f59e0b',width:2},itemStyle:{color:'#f59e0b'}}]},true);
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 document.querySelectorAll('#sectorPresets .preset').forEach(b=>b.onclick=()=>secPreset(b.dataset.sp));
