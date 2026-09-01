@@ -42,6 +42,7 @@ import time
 import traceback
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -101,6 +102,8 @@ def log_err(msg: str) -> None:
 
 # 实时行情诊断：记录每个数据源各取到多少只、最终用了哪个源
 SPOT_DIAG = {"attempts": [], "source": None, "rows": 0}
+# 实际行情时间（新浪/akshare 返回的行情时刻，如 "2026-09-01 10:24:56"），非流水线跑批时间
+LAST_QUOTE_TIME = {"ts": None}
 
 
 def write_run_log(**kw):
@@ -423,6 +426,7 @@ def write_sector(records, asof, source_desc):
     meta = {
         "asof": asof,
         "generated_at": datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S"),
+        "quote_time": LAST_QUOTE_TIME["ts"],
         "count": len(records),
         "min_stocks_per_sector": SECTOR_MIN_STOCKS,
         "source": source_desc,
@@ -525,6 +529,7 @@ def _fetch_spot_sina_raw(codes):
         return None
     chunks = [codes[i:i + 400] for i in range(0, len(codes), 400)]
     rows = []
+    qts_seen = []
     for ch in chunks:
         syms = ",".join(prefix(c) for c in ch)
         url = "https://hq.sinajs.cn/list=" + syms
@@ -566,9 +571,113 @@ def _fetch_spot_sina_raw(codes):
                 "code": cm.group(1), "代码": sym, "名称": name, "最新价": closep,
                 "今开": openp, "最高": high, "最低": low, "成交量": vol,
             })
+            if len(parts) > 31:                       # [30]=日期, [31]=时间 -> 实际行情时刻
+                d, t = parts[30].strip(), parts[31].strip()
+                if re.match(r"\d{4}-\d{2}-\d{2}$", d) and re.match(r"\d{2}:\d{2}:\d{2}$", t):
+                    qts_seen.append(f"{d} {t}")
     if not rows:
         return None
+    if qts_seen:                                      # 取全市场最新的一条行情时间
+        LAST_QUOTE_TIME["ts"] = max(qts_seen)
     return pd.DataFrame(rows)
+
+
+def fetch_hist_range(code: str, start_date: str, end_date: str):
+    """拉取指定日期区间的前复权日线（stock_zh_a_hist，只返回区间内数据，轻量）。
+
+    与缓存口径对齐要点：
+      - 该接口「成交量」单位为「手」，缓存为「股」，故 volume × 100；
+      - OHLC 为前复权(qfq)，与缓存(新浪前复权)在重叠日期上一致。
+    返回 DataFrame(date,open,high,low,close,volume,code) 或 None。
+    """
+    df = None
+    for i in range(3):                       # 接口在高并发下会 RemoteDisconnected，退避重试
+        try:
+            df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                    start_date=start_date, end_date=end_date, adjust="qfq")
+            break
+        except Exception as e:
+            if i == 2:
+                log_err(f"stock_zh_a_hist 失败 [{code}]: {repr(e)[:120]}")
+            time.sleep(0.5 * (i + 1))
+    if df is None or df.empty:
+        return None
+    df = df.rename(columns={"日期": "date", "开盘": "open", "最高": "high",
+                            "最低": "low", "收盘": "close", "成交量": "volume"}).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    for c in ("open", "high", "low", "close", "volume"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["volume"] = df["volume"] * 100.0          # 手 -> 股，与缓存一致
+    df["code"] = str(code).zfill(6)
+    df = df.dropna(subset=["date", "close"])
+    return df[["date", "open", "high", "low", "close", "volume", "code"]]
+
+
+def backfill_kline(days: int = 5, workers: int = 16):
+    """回补近 N 个交易日的日线到 kline_cache.parquet，并同步 kline_cache_seed.parquet。
+
+    只补到「昨天」：今天那根仍由实时行情(spot)提供，避免盘中的半根日线污染历史。
+    新数据按 (code, date) 覆盖旧行，去重后每只保留最近 N_TRADING_DAYS 根。
+    """
+    frames = load_cache_frames()
+    if not frames:
+        log_err("backfill: 缓存为空，请先 bootstrap")
+        return False
+    codes = sorted(frames.keys())
+    today = datetime.now(BJ).date()
+    end_d = today - pd.Timedelta(days=1)                       # 只补到昨天
+    start_d = today - pd.Timedelta(days=int(days) * 2 + 2)     # 日历日回溯，确保覆盖 N 个交易日
+    s, e = start_d.strftime("%Y%m%d"), end_d.strftime("%Y%m%d")
+    print(f"== 回补日线 {s} ~ {e}（{len(codes)} 只，并发 {workers}）==")
+
+    def _fetch_many(code_list, w):
+        got, bad = [], []
+        with ThreadPoolExecutor(max_workers=w) as ex:
+            futs = {ex.submit(fetch_hist_range, c, s, e): c for c in code_list}
+            n = 0
+            for fu in as_completed(futs):
+                c = futs[fu]
+                try:
+                    d = fu.result()
+                except Exception:
+                    d = None
+                n += 1
+                if d is None or d.empty:
+                    bad.append(c)
+                else:
+                    got.append(d)
+                if n % 1000 == 0:
+                    print(f"  进度 {n}/{len(code_list)}（失败 {len(bad)}）")
+        return got, bad
+
+    parts, fails = _fetch_many(codes, workers)
+    if fails:                                 # 首轮失败的降并发再试一轮，尽量收敛
+        print(f"== 首轮失败 {len(fails)} 只，降并发重试 ==")
+        time.sleep(2)
+        got2, fails = _fetch_many(fails, max(2, workers // 3))
+        parts += got2
+    if not parts:
+        log_err("backfill: 未取到任何日线")
+        return False
+
+    newdf = pd.concat(parts, ignore_index=True)
+    print(f"取回日线：{len(newdf)} 行 / {newdf['code'].nunique()} 只，"
+          f"日期 {newdf['date'].min().date()} ~ {newdf['date'].max().date()}，仍失败 {len(fails)} 只")
+
+    cache = pd.read_parquet(KLINE_CACHE)
+    cache["date"] = pd.to_datetime(cache["date"])
+    new_keys = set(newdf["code"].astype(str) + "|" + newdf["date"].dt.strftime("%Y-%m-%d"))
+    old_keys = cache["code"].astype(str) + "|" + cache["date"].dt.strftime("%Y-%m-%d")
+    cache = cache[~old_keys.isin(new_keys)]                    # 新数据覆盖同 (code,date) 旧行
+    merged = pd.concat([cache, newdf], ignore_index=True)
+    merged = merged.drop_duplicates(subset=["code", "date"], keep="last")
+    merged = merged.sort_values(["code", "date"]).reset_index(drop=True)
+    merged = merged.groupby("code", group_keys=False).tail(N_TRADING_DAYS)
+    merged.to_parquet(KLINE_CACHE, index=False)
+    print(f"合并后缓存：{len(merged)} 行 / {merged['code'].nunique()} 只，最后日期 {merged['date'].max().date()}")
+    shutil.copy2(KLINE_CACHE, KLINE_SEED)
+    print(f"已同步种子 -> {KLINE_SEED}")
+    return True
 
 
 def fetch_spot(codes=None):
@@ -607,6 +716,13 @@ def fetch_spot(codes=None):
     print(f"[spot] akshare：{n} 只")
     if df is not None and not df.empty:
         SPOT_DIAG["source"], SPOT_DIAG["rows"] = "akshare", n
+        if "时间戳" in df.columns:                    # 形如 "09:35:43"，补上当天日期
+            try:
+                t = str(df["时间戳"].dropna().max()).strip()
+                if re.match(r"\d{2}:\d{2}:\d{2}$", t):
+                    LAST_QUOTE_TIME["ts"] = f"{datetime.now(BJ).date()} {t}"
+            except Exception:
+                pass
         return df
     log_err("实时行情全部数据源失败，沿用缓存历史（不更新当天那根）")
     return None
@@ -770,6 +886,7 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
     meta = {
         "asof": asof,
         "generated_at": datetime.now(BJ).strftime("%Y-%m-%d %H:%M:%S"),
+        "quote_time": LAST_QUOTE_TIME["ts"],
         "count": len(records),
         "universe_count": int(universe_count),
         "source": source_desc,
@@ -793,7 +910,9 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
         log_err(f"板块 RPS 计算失败（不影响个股数据）: {repr(e)[:200]}")
     if TEMPLATE.exists():
         html = TEMPLATE.read_text(encoding="utf-8")
-        html = html.replace("__ASOF__", asof).replace("__GENERATED_AT__", meta["generated_at"])
+        html = (html.replace("__ASOF__", asof)
+                    .replace("__GENERATED_AT__", meta["generated_at"])
+                    .replace("__QUOTE_TIME__", meta.get("quote_time") or "—"))
         INDEX_HTML.write_text(html, encoding="utf-8")
         print(f"已生成 {INDEX_HTML}")
     else:
@@ -802,9 +921,12 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["bootstrap", "intraday", "close", "full", "sector-only"], default="intraday")
+    ap.add_argument("--mode", choices=["bootstrap", "intraday", "close", "full", "sector-only", "backfill"],
+                    default="intraday")
     ap.add_argument("--seed-local", action="store_true", help="bootstrap 时从本机 rps_fip kline 整合（秒级）")
     ap.add_argument("--limit", type=int, default=None, help="仅处理前 N 只（冒烟测试用）")
+    ap.add_argument("--days", type=int, default=5, help="backfill：回补最近 N 个交易日的日线")
+    ap.add_argument("--workers", type=int, default=8, help="backfill：并发线程数（过高会被接口掐连接）")
     args = ap.parse_args()
 
     # close 模式会写回缓存，必须基于全量 frame，禁止 --limit 截断
@@ -830,6 +952,10 @@ def main():
     print(f"== 模式: {args.mode} ==")
     industry_map, mcap_csv, watch_codes, watch_names = load_meta()
     mcap_map = dict(mcap_csv)
+
+    # backfill：回补近 N 日日线（用东财/akshare 区间接口，本地网络跑；只补到昨天，今天那根由 spot 提供）
+    if args.mode == "backfill":
+        sys.exit(0 if backfill_kline(days=args.days, workers=args.workers) else 1)
 
     if args.mode == "bootstrap":
         ok = build_cache_from_local() if args.seed_local else build_cache_from_akshare(limit=args.limit)

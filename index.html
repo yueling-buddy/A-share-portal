@@ -39,7 +39,7 @@ td.rankcell{text-align:center;font-variant-numeric:tabular-nums}
 </head>
 <body>
 <div class="shell">
-  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p>行情截至 2026-09-01 ｜ 生成时间 2026-09-01 02:11:09 ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
+  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p><span id="hdrTime">行情截至 2026-09-01 ｜ 行情时间 2026-09-01 10:41:28 ｜ 生成时间 2026-09-01 10:42:37</span> ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
   <div class="tabs">
     <button class="tab active" data-view="stock">个股动量</button>
     <button class="tab" data-view="sector">板块RPS</button>
@@ -143,7 +143,9 @@ Promise.all([
   fetch('data/sector_rps_history.json').then(r=>r.json()).catch(e=>{console.warn('板块历史数据加载失败（不影响其它视图）',e);return null;})
 ]).then(([RPS,FIP,S,H])=>{
   META=RPS.meta;DATA=RPS.data;rows=DATA.slice();
-  $('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}`;
+  const _qt=META.quote_time||'—';
+  $('hdrTime').textContent=`行情截至 ${META.asof} ｜ 行情时间 ${_qt} ｜ 生成时间 ${META.generated_at||'—'}`;
+  $('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}｜行情时间 ${_qt}`;
   $('note').innerHTML=`数据源：${META.source}，截至 ${META.asof}；${META.stock_pool_note}；${META.market_cap_note}。<b>FIP 的正负必须结合区间收益方向理解。</b>`;
   buildHead();computeKpis();apply();
   if(S){SECTORMETA=S.meta;SECTORDATA=S.data;buildSectorHead();$('sectorStatus').textContent=`${SECTORMETA.count} 个行业｜截至 ${SECTORMETA.asof}`;$('sectornote').innerHTML=`板块排名 = 各行业「市值加权区间收益」在全部行业中的降序名次（涨幅最高 = 第 1 名）。区间：1周 / 1月 / 3月 / 6月；已剔除等权口径。数据截至 ${SECTORMETA.asof}。`;}

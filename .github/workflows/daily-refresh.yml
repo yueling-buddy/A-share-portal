@@ -37,9 +37,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/kline_cache.parquet
-          key: kline-${{ github.run_id }}-${{ github.run_attempt }}
+          key: kline-v2-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            kline-
+            kline-v2-
 
       - name: Seed cache if missing
         run: |
