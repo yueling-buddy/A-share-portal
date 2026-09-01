@@ -205,6 +205,33 @@ def prefix(code: str) -> str:
     return "sz" + code
 
 
+def is_risk_warning_name(name: str) -> bool:
+    """识别当前证券简称中的风险警示/退市整理标记。
+
+    口径：ST、*ST、S*ST，以及简称末尾「退」（退市整理期）。
+    名称来自当日实时行情，避免静态 codes.csv 名称滞后导致戴帽股票混入。
+    """
+    s = re.sub(r"\s+", "", str(name or "")).upper()
+    return bool(re.match(r"^(?:\*ST|ST|S\*ST|SST)", s)) or s.endswith("退")
+
+
+def filter_risk_warning_frames(frames: dict, names: dict):
+    """在横截面计算前剔除风险警示股票，返回 (过滤后 frames, 被剔除清单)。"""
+    excluded = [
+        (code, str(names.get(code, "")))
+        for code in frames
+        if is_risk_warning_name(names.get(code, ""))
+    ]
+    if not excluded:
+        return frames, []
+    excluded_codes = {code for code, _ in excluded}
+    clean = {code: df for code, df in frames.items() if code not in excluded_codes}
+    sample = "、".join(f"{c} {n}" for c, n in excluded[:8])
+    more = f" 等（另 {len(excluded)-8} 只）" if len(excluded) > 8 else ""
+    print(f"股票池风险过滤：剔除 ST/*ST/退市整理 {len(excluded)} 只：{sample}{more}")
+    return clean, excluded
+
+
 # ---------------- 元信息 ----------------
 def load_meta():
     """加载仓库内稳定元信息。任一缺失仅记日志不中断。"""
@@ -313,14 +340,23 @@ def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, 
 
 
 def compute_all(frames: dict, names: dict, industry_map, mcap_map, watch_codes):
-    """对全市场 frames 计算指标 + 横截面 RPS（无未来函数）。返回 (records, asof)。"""
+    """对有效股票池计算指标 + 横截面 RPS（无未来函数）。返回 (records, asof)。
+
+    股票池严格以 data/codes.csv（watch_codes）为准；同时按当前证券简称动态剔除
+    ST、*ST、S*ST 与退市整理期，避免静态名单更新滞后。
+    """
+    if watch_codes is not None:
+        frames = {code: df for code, df in frames.items() if code in watch_codes}
     rows = []
     asof_counts = {}
     total = len(frames)
     done = 0
     for code, df in frames.items():
+        name = names.get(code, "")
+        if is_risk_warning_name(name):
+            continue
         try:
-            row = metrics_from_df(df, code, names.get(code, ""), industry_map, mcap_map, watch_codes)
+            row = metrics_from_df(df, code, name, industry_map, mcap_map, watch_codes)
         except Exception as e:
             log_err(f"指标计算失败 [{code}]: {repr(e)[:160]}")
             continue
@@ -983,7 +1019,7 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
         "count": len(records),
         "universe_count": int(universe_count),
         "source": source_desc,
-        "stock_pool_note": f"全市场横截面基准为成功计算的 {len(records)} 只；in_watchlist 标记选股盘。",
+        "stock_pool_note": f"股票池严格以 data/codes.csv 为准，有效横截面为成功计算的 {len(records)} 只；同时按当日实时证券简称动态剔除 ST、*ST、S*ST 与退市整理期股票。",
         "market_cap_note": "总市值主用 data/mcap.csv 快照" + ("（盘中实时市值未增强）" if not spot_enhanced else "（已实时增强）") + "。",
         "formula": {
             "rps": "N日收益率在当前有效股票池中的横截面百分位×100",
@@ -1108,6 +1144,10 @@ def main():
 
     now_bj = datetime.now(BJ)
     updated, calc_date = apply_spot_to_frames(frames, spot, names, now_bj)
+    # 必须在 RPS 横截面与板块聚合之前剔除风险警示股；名称以当日实时行情为准。
+    updated, risk_excluded = filter_risk_warning_frames(updated, names)
+    if watch_codes is not None and risk_excluded:
+        watch_codes = watch_codes - {code for code, _ in risk_excluded}
     records, asof = compute_all(updated, names, industry_map, mcap_map, watch_codes)
 
     # 防回退守卫：若实时行情拉取失败导致 asof 比已发布数据更旧，则跳过写盘，
