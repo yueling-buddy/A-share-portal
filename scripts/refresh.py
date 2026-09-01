@@ -848,6 +848,19 @@ def main():
     now_bj = datetime.now(BJ)
     updated, calc_date = apply_spot_to_frames(frames, spot, names, now_bj)
     records, asof = compute_all(updated, names, industry_map, mcap_map, watch_codes)
+
+    # 防回退守卫：若实时行情拉取失败导致 asof 比已发布数据更旧，则跳过写盘，
+    # 避免云端把已正确的当日数据回退到缓存里的旧交易日（如 08-28）。
+    if RPS_JSON.exists():
+        try:
+            prev = json.loads(RPS_JSON.read_text(encoding="utf-8")).get("meta", {}).get("asof")
+            if prev and asof < prev:
+                log_err(f"计算 asof={asof} 早于已发布 asof={prev}，疑似实时行情缺失，跳过写盘以免回退")
+                print(f"[guard] 跳过写盘：asof {asof} < 已发布 {prev}")
+                return
+        except Exception:
+            pass
+
     write_outputs(records, str(calc_date), "新浪实时行情 + 本地 300 日缓存（无未来函数）", len(updated), False)
 
     if args.mode == "close":
