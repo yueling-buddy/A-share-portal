@@ -63,6 +63,7 @@ WATCHLIST_CSV = DATA_DIR / "codes.csv"                 # 选股盘（股票池�
 INDUSTRY_CSV = DATA_DIR / "industry.csv"
 MCAP_CSV = DATA_DIR / "mcap.csv"
 RPS_JSON = DATA_DIR / "rps.json"
+HISTORY_JSON = DATA_DIR / "history.json"                     # 个股 K 线（OHLC+MA），按需懒加载，不进 rps.json（rps.json 因此从 ~33MB 降到 ~4MB）
 FIP_JSON = DATA_DIR / "fip.json"
 META_JSON = DATA_DIR / "meta.json"
 SECTOR_JSON = DATA_DIR / "sector_rps.json"
@@ -1010,6 +1011,15 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
         print("[FATAL] 无数据产出", file=sys.stderr)
         sys.exit(1)
     print(f"产出 {len(records)} 只，行情截至 {asof}")
+    # 把 K 线历史从主记录中拆出，单独写 history.json（懒加载），大幅缩减 rps.json 首屏体积
+    hist_map = {}
+    for r in records:
+        if "history" in r:
+            hist_map[r["code"]] = r.pop("history")
+    if hist_map:
+        HISTORY_JSON.write_text(json.dumps(hist_map, ensure_ascii=False, separators=(",", ":")),
+                                encoding="utf-8")
+        print(f"已生成 {HISTORY_JSON}（{len(hist_map)} 只 K 线历史，懒加载）")
     fip_records = [{
         "code": r["code"], "name": r["name"],
         "fip50": r.get("fip50"), "fip120": r.get("fip120"), "fip250": r.get("fip250"),
