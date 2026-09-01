@@ -250,7 +250,9 @@ def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, 
     close = df["close"].astype(float)
     last = float(close.iloc[-1])
     prev = float(close.iloc[-2]) if len(close) > 1 else np.nan
-    chg = (last / prev - 1.0) * 100 if np.isfinite(prev) and prev != 0 else np.nan
+    chg = df.attrs.get("spot_pct_change")
+    if chg is None or not np.isfinite(chg):
+        chg = (last / prev - 1.0) * 100 if np.isfinite(prev) and prev != 0 else np.nan
 
     ma = {n: close.rolling(n).mean().iloc[-1] if len(close) >= n else np.nan for n in (20, 50, 120, 200)}
     vol20 = df["volume"].tail(20).mean()
@@ -559,6 +561,7 @@ def _fetch_spot_sina_raw(codes):
             try:
                 name = parts[0]
                 openp = float(parts[1])
+                prev_close = float(parts[2])       # 昨收
                 closep = float(parts[3])          # 现价
                 high = float(parts[4])
                 low = float(parts[5])
@@ -567,9 +570,11 @@ def _fetch_spot_sina_raw(codes):
                 continue
             if not np.isfinite(closep) or closep <= 0:
                 continue
+            pct_change = ((closep / prev_close - 1.0) * 100.0) if (np.isfinite(prev_close) and prev_close > 0) else np.nan
             rows.append({
                 "code": cm.group(1), "代码": sym, "名称": name, "最新价": closep,
                 "今开": openp, "最高": high, "最低": low, "成交量": vol,
+                "涨跌幅": pct_change,
             })
             if len(parts) > 31:                       # [30]=日期, [31]=时间 -> 实际行情时刻
                 d, t = parts[30].strip(), parts[31].strip()
@@ -716,6 +721,12 @@ def fetch_spot(codes=None):
     print(f"[spot] akshare：{n} 只")
     if df is not None and not df.empty:
         SPOT_DIAG["source"], SPOT_DIAG["rows"] = "akshare", n
+        # 补齐/统一 日内实时涨跌幅
+        if "涨跌幅" not in df.columns or df["涨跌幅"].notna().sum() == 0:
+            price_col = "最新价" if "最新价" in df.columns else None
+            prev_cols = [c for c in ("昨收", "昨日收盘", "昨收价") if c in df.columns]
+            if price_col and prev_cols:
+                df["涨跌幅"] = (df[price_col] / df[prev_cols[0]] - 1.0) * 100.0
         if "时间戳" in df.columns:                    # 形如 "09:35:43"，补上当天日期
             try:
                 t = str(df["时间戳"].dropna().max()).strip()
@@ -833,6 +844,7 @@ def apply_spot_to_frames(frames: dict, spot: pd.DataFrame, names: dict, now_bj: 
                     "close": float(r.get("最新价")) if pd.notna(r.get("最新价")) else np.nan,
                     "volume": float(r.get("成交量")) if pd.notna(r.get("成交量")) else np.nan,
                     "name": str(r.get("名称", "")),
+                    "pct_change": float(r.get("涨跌幅")) if pd.notna(r.get("涨跌幅")) else np.nan,
                 }
             except Exception:
                 continue
@@ -869,6 +881,10 @@ def apply_spot_to_frames(frames: dict, spot: pd.DataFrame, names: dict, now_bj: 
             updated[code] = d  # 计算日早于历史（异常），不改
             continue
         d = pd.concat([d, pd.DataFrame([today_bar])], ignore_index=True).sort_values("date").reset_index(drop=True)
+        # 日内实时涨跌幅（最新价/昨收）优先来自行情接口，比 close[-1]/close[-2] 更实时
+        pc = sp.get("pct_change")
+        if pc is not None and np.isfinite(pc):
+            d.attrs["spot_pct_change"] = float(pc)
         updated[code] = d
     return updated, calc_date
 
