@@ -322,23 +322,17 @@ def compute_all(frames: dict, names: dict, industry_map, mcap_map, watch_codes):
 
 # ---------------- 板块（行业）RPS 聚合 ----------------
 SECTOR_MIN_STOCKS = 3                              # 行业内至少多少只股票才参与排名（防单票噪声）
-RET_COLS = {                                       # 板块收益窗口：股票 ret 列 -> 展示标签
-    # 与个股 RPS 完全平行的窗口（用于板块 RPS 横截面排名）
-    "ret50": "50D", "ret120": "120D", "ret250": "250D",
-    # 展示用区间收益（市值加权板块收益，对齐美股选股盘板块面板）
-    "ret1w": "1W", "ret1m": "1M", "ret3m": "3M", "ret6m": "6M", "ret_ytd": "YTD", "ret1y": "1Y",
+SECTOR_RET_COLS = {                                # 板块区间收益窗口（与个股区间收益口径一致）
+    "ret1w": "1W", "ret1m": "1M", "ret3m": "3M", "ret6m": "6M",
 }
-SECTOR_WIN = (50, 120, 250)                         # 板块 RPS 窗口，与个股 RPS 口径一致
 
 
 def compute_sector(records, asof):
-    """从个股 records 聚合出板块（行业）RPS。
+    """从个股 records 聚合出板块（行业）的区间涨幅排名。
 
-    两类口径并存：
-      - 板块 RPS（市值加权）= 各行业「市值加权收益」在全部行业中的横截面百分位 ×100，
-                            与个股 RPS 定义完全平行（=美股选股盘"市值加权板块收益"的 RPS 版）。
-      - 板块 RPS（等权）  = 各行业「等权收益」的百分位，作为对照。
-    同时输出行业成分股数、市值加权/等权区间收益、平均个股 RPS、强势股数、领涨股等。
+    直接用「市值加权区间收益」在全部行业中的名次（涨幅最高 = 第 1 名，向下递增），
+    不再使用 RPS 百分位。窗口：1周 / 1月 / 3月 / 6月；每个窗口同时给出排名与该窗口的
+    市值加权区间涨跌幅。另含成分股数、强势股数、领涨股等。
     返回 (sector_records, asof)；无有效行业时返回 ([], asof)。
     """
     if not records:
@@ -347,7 +341,7 @@ def compute_sector(records, asof):
     df = df[df["industry"].notna() & (df["industry"].astype(str).str.len() > 0)].copy()
     if df.empty:
         return [], asof
-    for c in ["composite_rps", "rps50", "rps120", "rps250", "market_cap_yi"] + list(RET_COLS):
+    for c in ["composite_rps", "market_cap_yi"] + list(SECTOR_RET_COLS):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -364,72 +358,31 @@ def compute_sector(records, asof):
         mc = pd.to_numeric(g["market_cap_yi"], errors="coerce").fillna(0.0)
         tot_mc = float(mc.sum())
         w = (mc / tot_mc) if tot_mc > 0 else None
-
-        # 区间收益：市值加权 vs 等权
-        ew_ret, cw_ret = {}, {}
-        for k in RET_COLS:
-            ew_ret[k] = float(g[k].mean(skipna=True)) if g[k].notna().any() else np.nan
-            if w is not None and tot_mc > 0:
-                cw_ret[k] = float((g[k].fillna(0.0) * w).sum())
-            else:
-                cw_ret[k] = ew_ret[k]
-        # 个股 RPS 的均值（市值加权 vs 等权）：反映"板块内个股平均强度"
-        ew_rps, cw_rps = {}, {}
-        for s in SECTOR_WIN:
-            c = f"rps{s}"
-            ew_rps[s] = float(g[c].mean(skipna=True)) if g[c].notna().any() else np.nan
-            if w is not None and tot_mc > 0:
-                cw_rps[s] = float((g[c].fillna(0.0) * w).sum())
-            else:
-                cw_rps[s] = ew_rps[s]
-
-        avg_comp = float(g["composite_rps"].mean(skipna=True)) if g["composite_rps"].notna().any() else np.nan
+        # 市值加权区间收益（已剔除等权口径）
+        cw_ret = {}
+        for k in SECTOR_RET_COLS:
+            cw_ret[k] = float((g[k].fillna(0.0) * w).sum()) if (w is not None and tot_mc > 0) else (float(g[k].mean(skipna=True)) if g[k].notna().any() else np.nan)
         n_strong = int((g["composite_rps"] >= 90).sum())
         top = g.sort_values("composite_rps", ascending=False, na_position="last").iloc[0]
         rows.append({
             "industry": ind,
             "n_stocks": int(n),
-            "total_mcap_yi": tot_mc if tot_mc > 0 else None,
-            "avg_mcap_yi": float(mc.mean()) if n > 0 else None,
-            # 板块 RPS（市值加权）：个股 RPS 的市值加权均值
-            "cw_rps50": cw_rps[50], "cw_rps120": cw_rps[120], "cw_rps250": cw_rps[250],
-            "cw_composite_rps": 0.3 * cw_rps[50] + 0.3 * cw_rps[120] + 0.4 * cw_rps[250],
-            # 板块 RPS（等权）：个股 RPS 的等权均值
-            "ew_rps50": ew_rps[50], "ew_rps120": ew_rps[120], "ew_rps250": ew_rps[250],
-            "ew_composite_rps": 0.3 * ew_rps[50] + 0.3 * ew_rps[120] + 0.4 * ew_rps[250],
-            # 板块区间收益（市值加权 / 等权）
-            "ret50_cw": cw_ret["ret50"], "ret120_cw": cw_ret["ret120"], "ret250_cw": cw_ret["ret250"],
-            "ret1w_cw": cw_ret["ret1w"], "ret1m_cw": cw_ret["ret1m"], "ret3m_cw": cw_ret["ret3m"],
-            "ret6m_cw": cw_ret["ret6m"], "ret_ytd_cw": cw_ret["ret_ytd"], "ret1y_cw": cw_ret["ret1y"],
-            "ret50_ew": ew_ret["ret50"], "ret120_ew": ew_ret["ret120"], "ret250_ew": ew_ret["ret250"],
-            "ret1w_ew": ew_ret["ret1w"], "ret1m_ew": ew_ret["ret1m"], "ret3m_ew": ew_ret["ret3m"],
-            "ret6m_ew": ew_ret["ret6m"], "ret_ytd_ew": ew_ret["ret_ytd"], "ret1y_ew": ew_ret["ret1y"],
-            "avg_composite_rps": avg_comp,
+            "ret1w_cw": cw_ret["ret1w"], "ret1m_cw": cw_ret["ret1m"],
+            "ret3m_cw": cw_ret["ret3m"], "ret6m_cw": cw_ret["ret6m"],
             "n_strong": n_strong,
             "top_code": str(top["code"]), "top_name": str(top["name"]),
             "top_composite_rps": None if pd.isna(top["composite_rps"]) else float(top["composite_rps"]),
         })
 
     sdf = pd.DataFrame(rows)
-    # 板块 RPS（横截面百分位版）：以"市值加权区间收益"在行业间排名，得到真正的相对强度排名
-    for k in RET_COLS:
-        c = k + "_cw"
-        if c in sdf.columns:
-            sdf[f"rps_{k}_cw"] = sdf[c].rank(pct=True, method="average") * 100.0
-    sdf["sector_composite_rps"] = (
-        0.3 * sdf["rps_ret50_cw"] + 0.3 * sdf["rps_ret120_cw"] + 0.4 * sdf["rps_ret250_cw"]
-    ) if {"rps_ret50_cw", "rps_ret120_cw", "rps_ret250_cw"}.issubset(sdf.columns) else np.nan
-
-    # 保留 4 位小数（RPS 类）
-    rps_cols = [c for c in sdf.columns if c.startswith(("cw_rps", "ew_rps", "rps_ret", "sector_composite_rps"))]
-    rps_cols += ["cw_composite_rps", "ew_composite_rps", "avg_composite_rps", "top_composite_rps"]
-    for c in rps_cols:
+    # 排名：各行业「市值加权区间收益」降序名次（涨幅最高 = 第 1 名）
+    for k in SECTOR_RET_COLS:
+        c = k + "_cw"                       # k 已是 ret1w/ret1m/ret3m/ret6m
+        sdf["rank" + k[3:]] = sdf[c].rank(ascending=False, method="first").astype(int)
+    for c in ["ret1w_cw", "ret1m_cw", "ret3m_cw", "ret6m_cw"]:
         if c in sdf.columns:
             sdf[c] = sdf[c].round(2)
-    ret_cols = [c for c in sdf.columns if c.endswith(("_cw", "_ew")) and c.startswith("ret")]
-    for c in ret_cols:
-        sdf[c] = sdf[c].round(2)
-    sdf = sdf.sort_values("sector_composite_rps", ascending=False, na_position="last")
+    sdf = sdf.sort_values("rank6m", ascending=True, na_position="last")
     return sdf.replace({np.nan: None}).to_dict(orient="records"), asof
 
 
@@ -444,10 +397,9 @@ def write_sector(records, asof, source_desc):
         "min_stocks_per_sector": SECTOR_MIN_STOCKS,
         "source": source_desc,
         "formula": {
-            "板块RPS_市值加权": "各行业「市值加权区间收益」在全部行业中的横截面百分位×100；综合=0.3×RPS50+0.3×RPS120+0.4×RPS250",
-            "板块RPS_等权": "各行业「等权区间收益」的百分位（对照口径）",
-            "市值加权收益": "行业内成分股按总市值加权平均的区间收益率",
-            "等权收益": "行业内成分股简单平均的区间收益率",
+            "排名口径": "各行业「市值加权区间收益」在全部行业中的降序名次：涨幅最高=第1名，依次递增",
+            "区间窗口": "1周 / 1月 / 3月 / 6月（与个股区间收益口径一致）",
+            "市值加权收益": "行业内成分股按总市值加权平均的区间收益率（已剔除等权口径）",
         },
     }
     SECTOR_JSON.write_text(
@@ -463,12 +415,11 @@ def write_sector(records, asof, source_desc):
 
 
 def write_sector_history(records, asof):
-    """把当日板块 RPS 截面快照追加进历史文件。
+    """把当日板块区间涨幅排名截面快照追加进历史文件。
 
     - 以 asof 交易日为键，覆盖写入（intraday 多次运行同键更新，close 定稿）；
       因此每个交易日最终只保留 1 个最新点。
-    - 每天记录每个行业的：板块综合RPS / RPS50 / RPS120 / RPS250 / 市值加权6月收益 /
-      成分股数 / 强RPS股数 / 平均个股RPS。
+    - 每天记录每个行业的：1周/1月/3月/6月 市值加权涨幅与排名 / 成分股数 / 强RPS股数。
     - 仅保留最近 MAX_HISTORY_DATES 个交易日（约 2.3 年），避免无限膨胀。
     """
     if not records:
@@ -479,14 +430,11 @@ def write_sector_history(records, asof):
         if not ind:
             continue
         today[ind] = {
-            "crps": r.get("sector_composite_rps"),
-            "r50": r.get("rps_ret50_cw"),
-            "r120": r.get("rps_ret120_cw"),
-            "r250": r.get("rps_ret250_cw"),
-            "r6m_cw": r.get("ret6m_cw"),
-            "n_stocks": r.get("n_stocks"),
-            "n_strong": r.get("n_strong"),
-            "avg_composite_rps": r.get("avg_composite_rps"),
+            "ret1w_cw": r.get("ret1w_cw"), "rank1w": r.get("rank1w"),
+            "ret1m_cw": r.get("ret1m_cw"), "rank1m": r.get("rank1m"),
+            "ret3m_cw": r.get("ret3m_cw"), "rank3m": r.get("rank3m"),
+            "ret6m_cw": r.get("ret6m_cw"), "rank6m": r.get("rank6m"),
+            "n_stocks": r.get("n_stocks"), "n_strong": r.get("n_strong"),
         }
     hist = {}
     if SECTOR_HISTORY_JSON.exists():
