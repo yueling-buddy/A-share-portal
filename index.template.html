@@ -194,8 +194,8 @@ function drawHistory(){const ind=$('histInd').value;const metric=$('histWin').va
   const tot=SECTORHISTORY.industries.length;const lastVal=vals[n-1];
   status.innerHTML=`${ind}｜最新周（${dates[n-1]}）${lbl} <b>${lastVal!=null?(metric==='str'?Number(lastVal).toFixed(1):lastVal+' / '+tot):'—'}</b>`;
   if(!historyChart)historyChart=echarts.init($('historyChart'));
-  historyChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:[lbl]},grid:{left:54,right:30,top:42,bottom:64},xAxis:{type:'category',data:dates,axisLabel:{hideOverlap:true,rotate:45}},
-    yAxis:[{type:'value',name:lbl,min:metric==='rank'?1:0,max:metric==='rank'?Math.max(2,tot):100,inverse:metric==='rank',position:'left',axisLabel:{formatter: metric==='rank'?'第{value}':'{value}'}}],
+  historyChart.setOption({animation:false,tooltip:{trigger:'axis'},legend:{data:[lbl]},grid:{left:60,right:30,top:42,bottom:88},xAxis:{type:'category',data:dates,axisLabel:{hideOverlap:true,rotate:50,formatter:d=>d.slice(5)}},
+    yAxis:[{type:'value',name:lbl,min:metric==='rank'?1:0,max:metric==='rank'?Math.max(2,tot):100,inverse:metric==='rank',position:'left',splitNumber:6,axisLabel:{interval:'auto',formatter: metric==='rank'?'第{value}':'{value}'}}],
     series:[{name:lbl,type:'line',showSymbol:true,symbolSize:6,data:vals,lineStyle:{color:'#f59e0b',width:2},itemStyle:{color:'#f59e0b'}}]},true);
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
