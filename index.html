@@ -39,7 +39,7 @@ td.rankcell{text-align:center;font-variant-numeric:tabular-nums}
 </head>
 <body>
 <div class="shell">
-  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p><span id="hdrTime">行情截至 2026-09-01 ｜ 行情时间 2026-09-01 11:36:00 ｜ 生成时间 2026-09-01 11:47:56</span> ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
+  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p><span id="hdrTime">行情截至 2026-09-01 ｜ 行情时间 2026-09-01 11:36:00 ｜ 生成时间 2026-09-01 12:23:38</span> ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
   <div class="tabs">
     <button class="tab active" data-view="stock">个股动量</button>
     <button class="tab" data-view="sector">板块RPS</button>
@@ -155,7 +155,7 @@ Promise.all([
 }).catch(e=>{$('dataStatus').textContent='数据加载失败';document.querySelector('.table-scroll').innerHTML=`<div class="error">${e}<br>请通过 GitHub Pages 或本地 HTTP 服务打开，不要直接双击 file://。</div>`;});
 
 // ---------- 板块 RPS ----------
-let SECTORDATA=[],SECTORMETA={},srows=[],sSortKey='str6m',sSortDir=-1,secHighlight=null;
+let SECTORDATA=[],SECTORMETA={},srows=[],sSortKey='rank1m',sSortDir=1,secHighlight=null;
 const SECTOR_COLS=[
  ['industry','行业','str'],
  ['str1w','1周强度','rps'],
