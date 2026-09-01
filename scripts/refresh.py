@@ -34,10 +34,13 @@ import argparse
 import csv
 import json
 import math
+import re
 import shutil
 import sys
 import time
 import traceback
+import urllib.request
+import urllib.error
 from datetime import date, datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -484,19 +487,95 @@ def fetch_daily(symbol: str):
     return with_retry(_call, f"stock_zh_a_daily:{symbol}")
 
 
-def fetch_spot():
-    """全市场实时行情（新浪，一次返回）。失败返回 None。"""
+def _fetch_spot_sina_raw(codes):
+    """直连新浪 hq.sinajs.cn 批量行情（按交易所前缀分块）。
+
+    返回与 akshare.stock_zh_a_spot 同 schema 的 DataFrame
+    （列：代码/名称/最新价/今开/最高/最低/成交量）或 None。
+    不依赖 akshare，单请求批量、海外通常可达，是云端主数据源。
+    """
+    if not codes:
+        return None
+    chunks = [codes[i:i + 400] for i in range(0, len(codes), 400)]
+    rows = []
+    for ch in chunks:
+        syms = ",".join(prefix(c) for c in ch)
+        url = "https://hq.sinajs.cn/list=" + syms
+        try:
+            req = urllib.request.Request(url, headers={
+                "Referer": "https://finance.sina.com.cn",
+                "User-Agent": "Mozilla/5.0",
+            })
+            raw = urllib.request.urlopen(req, timeout=15).read().decode("gbk", "ignore")
+        except Exception as e:
+            log_err(f"Sina 原始接口分块失败: {repr(e)[:160]}")
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line.startswith("var hq_str_"):
+                continue
+            m = re.match(r'var hq_str_(\w+?)="(.*)";?\s*$', line)
+            if not m:
+                continue
+            sym = m.group(1)                      # e.g. sh600000
+            cm = re.search(r"(\d{6})$", sym)
+            if not cm:
+                continue
+            parts = m.group(2).split(",")
+            if len(parts) < 10:
+                continue
+            try:
+                name = parts[0]
+                openp = float(parts[1])
+                closep = float(parts[3])          # 现价
+                high = float(parts[4])
+                low = float(parts[5])
+                vol = float(parts[8])             # 成交量（手）
+            except Exception:
+                continue
+            if not np.isfinite(closep) or closep <= 0:
+                continue
+            rows.append({
+                "code": cm.group(1), "代码": sym, "名称": name, "最新价": closep,
+                "今开": openp, "最高": high, "最低": low, "成交量": vol,
+            })
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
+
+
+def fetch_spot(codes=None):
+    """全市场实时行情，多源兜底：新浪原始接口(主) -> akshare(末)。
+
+    返回 DataFrame（列：代码/名称/最新价/今开/最高/最低/成交量）或 None。
+    显式打印每个数据源的行数，便于在 GitHub Actions 日志里确认是否取到实时行情。
+    """
+    # 1) 新浪原始接口（主源：单请求批量、不依赖 akshare、海外通常可达）
+    if codes:
+        df = _fetch_spot_sina_raw(codes)
+        print(f"[spot] 新浪原始接口：{len(df) if df is not None else 0} 只")
+        if df is not None and not df.empty:
+            return df
+    else:
+        print("[spot] 未提供代码列表，跳过新浪原始接口")
+
+    # 2) akshare stock_zh_a_spot（兜底）
     def _call():
-        df = ak.stock_zh_a_spot()
-        if df is None or df.empty:
+        d = ak.stock_zh_a_spot()
+        if d is None or d.empty:
             return None
-        df = df.copy()
+        d = d.copy()
         # 新浪 spot 的"代码"带交易所前缀（sh600519/sz000001/bj920000），
         # 须提取末 6 位纯数字，才能与缓存的纯数字 code 对齐
-        df["code"] = df["代码"].astype(str).str.extract(r"(\d{6})$")[0]
-        df = df.dropna(subset=["code"])
+        d["code"] = d["代码"].astype(str).str.extract(r"(\d{6})$")[0]
+        d = d.dropna(subset=["code"])
+        return d
+    df = with_retry(_call, "stock_zh_a_spot")
+    print(f"[spot] akshare：{len(df) if df is not None else 0} 只")
+    if df is not None and not df.empty:
         return df
-    return with_retry(_call, "stock_zh_a_spot")
+    log_err("实时行情全部数据源失败，沿用缓存历史（不更新当天那根）")
+    return None
 
 
 # ---------------- 缓存构建 ----------------
@@ -759,7 +838,7 @@ def main():
         names.setdefault(c, "")
 
     print("== 拉取全市场实时行情 ==")
-    spot = fetch_spot()
+    spot = fetch_spot(list(frames.keys()))
     if spot is None:
         log_err("实时行情拉取失败，沿用缓存历史（不更新当天那根）")
         spot = None
