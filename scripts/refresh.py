@@ -265,8 +265,34 @@ def load_meta():
     return industry, mcap, watch_codes, watch_names
 
 
+# ---------------- 量比（标准口径） ----------------
+def _quote_dt() -> datetime:
+    """量比归一化用的行情时刻（北京时间）：优先新浪行情时间戳，回退本机时间。"""
+    ts = LAST_QUOTE_TIME.get("ts")
+    if ts:
+        try:
+            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJ)
+        except Exception:
+            pass
+    return datetime.now(BJ)
+
+
+def _elapsed_trading_minutes(dt: datetime) -> int:
+    """A股已交易分钟数（不含午休）。09:30前=0，15:00后=240。"""
+    t = dt.time()
+    if t < dtime(9, 30):
+        return 0
+    if t <= dtime(11, 30):
+        return int((dt - datetime.combine(dt.date(), dtime(9, 30), tzinfo=BJ)).total_seconds() // 60)
+    if t < dtime(13, 0):
+        return 120
+    if t <= dtime(15, 0):
+        return 120 + int((dt - datetime.combine(dt.date(), dtime(13, 0), tzinfo=BJ)).total_seconds() // 60)
+    return 240
+
+
 # ---------------- 单只指标 ----------------
-def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, watch_codes):
+def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, watch_codes, elapsed_min: int = 240):
     """从已含"当天那根"的日线 DataFrame 计算单只全部指标（无未来函数）。"""
     df = df.tail(N_TRADING_DAYS).copy()
     for c in ("open", "high", "low", "close", "volume"):
@@ -283,8 +309,14 @@ def metrics_from_df(df: pd.DataFrame, code: str, name: str, industry, mcap_map, 
         chg = (last / prev - 1.0) * 100 if np.isfinite(prev) and prev != 0 else np.nan
 
     ma = {n: close.rolling(n).mean().iloc[-1] if len(close) >= n else np.nan for n in (20, 50, 120, 200)}
-    vol20 = df["volume"].tail(20).mean()
-    vol_ratio = float(df["volume"].iloc[-1] / vol20) if np.isfinite(vol20) and vol20 > 0 else np.nan
+    # 标准量比 = 今日累计量 × 240 ÷ (近5日平均量 × 已交易分钟)
+    # 分母剔除当日避免重复计数；盘中按已交易分钟归一，收盘(240)退化为日度量能比
+    vol_today = float(df["volume"].iloc[-1])
+    vol_base = df["volume"].iloc[:-1].tail(5).mean()
+    if np.isfinite(vol_base) and vol_base > 0 and elapsed_min and elapsed_min > 0:
+        vol_ratio = float(vol_today * 240.0 / (vol_base * elapsed_min))
+    else:
+        vol_ratio = np.nan
     prior_high = df["high"].shift(1).rolling(250).max().iloc[-1] if len(df) >= 251 else np.nan
     dist_high = (last / prior_high - 1.0) * 100 if np.isfinite(prior_high) and prior_high > 0 else np.nan
     dr = close.pct_change().dropna()
@@ -375,12 +407,13 @@ def compute_all(frames: dict, names: dict, industry_map, mcap_map, watch_codes):
     asof_counts = {}
     total = len(frames)
     done = 0
+    elapsed_min = _elapsed_trading_minutes(_quote_dt())
     for code, df in frames.items():
         name = names.get(code, "")
         if is_risk_warning_name(name):
             continue
         try:
-            row = metrics_from_df(df, code, name, industry_map, mcap_map, watch_codes)
+            row = metrics_from_df(df, code, name, industry_map, mcap_map, watch_codes, elapsed_min=elapsed_min)
         except Exception as e:
             log_err(f"指标计算失败 [{code}]: {repr(e)[:160]}")
             continue
