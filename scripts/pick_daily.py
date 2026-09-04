@@ -12,10 +12,10 @@
   另：剔除停牌；涨停股默认剔除（10 点买不进）。
   默认按综合 RPS 降序排列，--sort 可切 chg / score。
 
-量比有两个口径，用 --vol-src 选（默认 intraday）：
-  - intraday（分时归一化，推荐）：(当日累计量 / 已交易分钟) ÷ (前 5 日均量 / 240)
+量比有两个口径，用 --vol-src 选（默认 dashboard，直接调选股盘 vol_ratio20，已是分时归一化）：
+  - intraday（分时归一化，本地自算对照）：(当日累计量 / 已交易分钟) ÷ (前 5 日均量 / 240)
       10 点只有 30 分钟数据时也能反映真实放量程度。
-  - dashboard（直接调看板字段 vol_ratio20）：当日累计量 ÷ 20 日均量，全日口径。
+  - dashboard（直接调看板字段 vol_ratio20，推荐）：该字段公式本就分时归一化(当日累计量×240÷(前5日均量×已交易分钟))，10点不低。
       盘中未做时间归一化，10 点会系统性偏低，过 1.5 的会极少。
   两种口径的入选数都会打印出来，方便按实测数据选。
 
@@ -513,8 +513,8 @@ def main() -> None:
     ap.add_argument("--fip-max", type=float, default=0.0, help="FIP250 上限（小于等于）")
     ap.add_argument("--min-mcap", type=float, default=50.0, help="总市值下限（亿元，严格大于）")
     ap.add_argument("--vol-min", type=float, default=1.5, help="量比下限（严格大于）")
-    ap.add_argument("--vol-src", default="intraday", choices=["intraday", "dashboard"],
-                    help="量比口径：intraday=分时归一化；dashboard=直接调看板 vol_ratio20")
+    ap.add_argument("--vol-src", default="dashboard", choices=["intraday", "dashboard"],
+                    help="量比口径：dashboard=直接调看板 vol_ratio20（已是分时归一化，推荐）；intraday=本地自算对照")
     ap.add_argument("--ma50-ceil-pct", type=float, default=30.0, help="股价相对 MA50 的最大正偏离%%（对应 1.3 倍）")
     ap.add_argument("--dist-high-min", type=float, default=-15.0, help="距 250 日新高的最小百分比（≥）")
     ap.add_argument("--top", type=int, default=20, help="输出条数")
