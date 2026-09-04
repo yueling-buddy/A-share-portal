@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "mode: bootstrap | intraday | close"
+        description: "mode: bootstrap | intraday | close（留空则由北京时间自动判定：15:00-15:30 视为 close）"
         type: string
         required: false
-        default: "intraday"
   # 推送到 main 时立即刷新一次（cron 停摆时用于补数据；bot 自身的 push 不会递归触发）
   push:
     branches: [main]
