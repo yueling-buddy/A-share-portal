@@ -280,7 +280,8 @@ def screen(args) -> dict:
         }
 
     cands = [slim(r) for r in pool[: args.top]]
-    fund_top5 = [c["code"] for c in cands[:5]]
+    top5_codes = [c["code"] for c in cands[:5]]
+    fund_all = [c["code"] for c in cands]
     sec_top = sorted(sec.get("data", []), key=lambda s: -(num(s.get("str6m"), 0) or 0))[:6]
 
     return {
@@ -310,7 +311,8 @@ def screen(args) -> dict:
             "dpwd": market_temperature(str(asof or datetime.now().date())),
         },
         "candidates": cands,
-        "fund_top5": fund_top5,
+        "top5_codes": top5_codes,
+        "fund_all": fund_all,
         "sectors_top": [
             {"industry": s["industry"], "str6m": s.get("str6m"), "str3m": s.get("str3m"),
              "str1m": s.get("str1m"), "rank1m": s.get("rank1m"),
@@ -371,7 +373,8 @@ def render(pick: dict) -> str:
     dp = m.get("dpwd") or {}
     fund = load_json(FUND_JSON, {}) or {}
     cands = pick["candidates"]
-    top5 = pick["fund_top5"]
+    top5_codes = pick["top5_codes"]
+    fund_all = pick["fund_all"]
 
     def zone_cls(z: str) -> str:
         if "AGGRESSIVE" in z or "ACTIVE" in z:
@@ -395,7 +398,7 @@ def render(pick: dict) -> str:
 
     rows = []
     for c in cands:
-        tag = '<span class="pill top">TOP5</span>' if c["code"] in top5 else ""
+        tag = '<span class="pill top">TOP5</span>' if c["code"] in top5_codes else ""
         chg = num(c.get("chg_pct"))
         chg_cls = "up" if (chg or 0) > 0 else ("down" if (chg or 0) < 0 else "")
         vr = num(c.get("vol_ratio"))
@@ -419,7 +422,7 @@ def render(pick: dict) -> str:
         )
 
     fund_cards = []
-    for code in top5:
+    for code in fund_all:
         c = next((x for x in cands if x["code"] == code), None)
         if not c:
             continue
@@ -545,8 +548,8 @@ def main() -> None:
             print(f"  {c['rank']:>2}. {c['code']} {c['name']:<8} RPS{c['composite_rps']:.1f} "
                   f"量比{c['vol_ratio']} 涨幅{c['chg_pct']:+}% 距高{c['dist_high_250']}% "
                   f"vsMA50 {c['vs_ma50']}% {c['industry']}")
-        missing = [c for c in pick["fund_top5"] if c not in (load_json(FUND_JSON) or {})]
-        print("  Top5 待补基本面: " + (", ".join(missing) if missing else "无（已全部缓存）"))
+        missing = [c for c in pick["fund_all"] if c not in (load_json(FUND_JSON) or {})]
+        print("  入选股待补基本面: " + (", ".join(missing) if missing else "无（已全部缓存）"))
     else:
         pick = load_json(PICK_JSON)
         if not pick:
