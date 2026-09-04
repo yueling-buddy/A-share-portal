@@ -6,18 +6,24 @@
   1. 综合 RPS > 85
   2. FIP250 ≤ 0
   3. 总市值 > 50 亿元
-  4. 量比 > 1.5（分时归一化口径：当日累计量/已交易分钟 ÷ 前 5 日均量/240。
-     10 点只有 30 分钟数据时不会被系统性低估；rps.json 里的 vol_ratio20 是
-     「当日累计量/20日均量」的全日口径，盘中直接拿来筛会几乎全军覆没，故不采用）
-  5. 股价高于 MA50 且低于 1.3 倍 MA50（即 0 < vs_ma50 < 30%）
+  4. 量比 > 1.5
+  5. 股价高于 MA50，且低于 1.3 倍 MA50（即 0 < vs_ma50 < 30%）
   6. 距 250 日新高 ≥ -15%
   另：剔除停牌；涨停股默认剔除（10 点买不进）。
-  默认按综合 RPS 降序排列，--sort 可切 chg（当日涨幅）/ score（盘中综合分）。
+  默认按综合 RPS 降序排列，--sort 可切 chg / score。
+
+量比有两个口径，用 --vol-src 选（默认 intraday）：
+  - intraday（分时归一化，推荐）：(当日累计量 / 已交易分钟) ÷ (前 5 日均量 / 240)
+      10 点只有 30 分钟数据时也能反映真实放量程度。
+  - dashboard（直接调看板字段 vol_ratio20）：当日累计量 ÷ 20 日均量，全日口径。
+      盘中未做时间归一化，10 点会系统性偏低，过 1.5 的会极少。
+  两种口径的入选数都会打印出来，方便按实测数据选。
 
 用法：
   python scripts/pick_daily.py                # 刷新数据 + 筛选 + 渲染
   python scripts/pick_daily.py --no-refresh   # 跳过 refresh.py，直接用现有 data/*.json
   python scripts/pick_daily.py --render-only  # 只重渲染 HTML（补完基本面后）
+  python scripts/pick_daily.py --vol-src dashboard --vol-min 1.5
   python scripts/pick_daily.py --rps-min 90 --vol-min 2 --sort chg
 """
 from __future__ import annotations
@@ -40,6 +46,10 @@ FUND_JSON = DATA / "fundamentals.json"
 OUT_HTML = ROOT / "pick.html"
 
 WEIGHTS = {"chg": 0.40, "vol": 0.20, "dist": 0.20, "sector": 0.20}
+VOL_LABEL = {
+    "intraday": "分时归一化（当日累计量/已交易分钟 ÷ 前5日均量/240）",
+    "dashboard": "看板字段 vol_ratio20（当日累计量 ÷ 20日均量，全日口径）",
+}
 
 
 # ---------------------------------------------------------------- utils
@@ -93,7 +103,7 @@ def num(v, default=None):
     return v if isinstance(v, (int, float)) else default
 
 
-# ---------------------------------------------------------------- 量比（分时归一化）
+# ---------------------------------------------------------------- 量比
 def elapsed_minutes(quote_time: str | None) -> int:
     """A股当日已交易分钟数：9:30-11:30 共 120 分，13:00-15:00 共 120 分，合计 240。"""
     if not quote_time:
@@ -168,7 +178,6 @@ def screen(args) -> dict:
 
     mins = elapsed_minutes(quote_time)
     baseline, cache_last = load_vol_baseline(asof)
-    vr_mode = "分时归一化（当日累计量/已交易分钟 ÷ 前5日均量/240）"
 
     # 1) 逐条硬条件（记录漏斗，便于回看是哪一档卡掉的）
     funnel = []
@@ -197,21 +206,27 @@ def screen(args) -> dict:
     keep(lambda r: (num(r.get("dist_high_250"), -999) or -999) >= args.dist_high_min)
     step(f"距250日新高 ≥ {args.dist_high_min:g}%", pool)
 
-    # 量比（这一步需要算，单独处理）
+    # 量比：两个口径都算，按 --vol-src 决定用哪个筛，另一个只统计数量做对比
     n_before_vol = len(pool)
-    vol_ok = []
+    n_vol_intraday = n_vol_dashboard = 0
     for r in pool:
         vol_mn = num(r.get("volume_mn"))          # 百万股（当日累计）
         base = baseline.get(r["code"])
+        vr_i = None
         if base and base > 0 and vol_mn and mins >= 5:
-            vr = (vol_mn * 1e6 / mins) / (base / 240.0)
-        else:
-            vr = num(r.get("vol_ratio20"))        # 兜底：用全日口径
-        r["vol_ratio"] = round(vr, 2) if isinstance(vr, (int, float)) else None
-        if isinstance(vr, (int, float)) and vr > args.vol_min:
-            vol_ok.append(r)
-    pool = vol_ok
-    step(f"量比 > {args.vol_min:g}", pool)
+            vr_i = (vol_mn * 1e6 / mins) / (base / 240.0)
+        vr_d = num(r.get("vol_ratio20"))
+        r["vol_ratio_intraday"] = round(vr_i, 2) if isinstance(vr_i, (int, float)) else None
+        r["vol_ratio20"] = vr_d
+        if isinstance(vr_i, (int, float)) and vr_i > args.vol_min:
+            n_vol_intraday += 1
+        if isinstance(vr_d, (int, float)) and vr_d > args.vol_min:
+            n_vol_dashboard += 1
+        r["vol_ratio"] = r["vol_ratio_intraday"] if args.vol_src == "intraday" else vr_d
+    pool = [r for r in pool
+            if isinstance(r.get("vol_ratio"), (int, float)) and r["vol_ratio"] > args.vol_min]
+    step(f"量比 > {args.vol_min:g}（{args.vol_src}）", pool)
+
     n_limit_up = sum(1 for r in pool if is_limit_up(r["code"], num(r.get("chg_pct"))))
     if not args.allow_limit_up:
         pool = [r for r in pool if not is_limit_up(r["code"], num(r.get("chg_pct")))]
@@ -220,7 +235,7 @@ def screen(args) -> dict:
     if not pool:
         raise SystemExit(
             "候选池为空。漏斗：" + " → ".join(f"{k}={v}" for k, v in funnel)
-            + "（可放宽 --rps-min / --vol-min / --dist-high-min）"
+            + "（可放宽 --rps-min / --vol-min / --dist-high-min，或换 --vol-src dashboard）"
         )
 
     # 2) 盘中综合分（仅作参考列，不参与硬条件）
@@ -252,6 +267,7 @@ def screen(args) -> dict:
             "rank": r["rank"], "code": r["code"], "name": r["name"],
             "industry": r.get("industry"), "close": r.get("close"),
             "chg_pct": r.get("chg_pct"), "vol_ratio": r.get("vol_ratio"),
+            "vol_ratio_intraday": r.get("vol_ratio_intraday"),
             "vol_ratio20": r.get("vol_ratio20"), "amount_yi": r.get("amount_yi"),
             "dist_high_250": r.get("dist_high_250"), "vs_ma50": r.get("vs_ma50"),
             "market_cap_yi": r.get("market_cap_yi"),
@@ -276,8 +292,11 @@ def screen(args) -> dict:
             "n_pool": len(pool),
             "n_limit_up_excluded": n_limit_up,
             "n_before_vol": n_before_vol,
+            "n_vol_intraday": n_vol_intraday,
+            "n_vol_dashboard": n_vol_dashboard,
+            "vol_src": args.vol_src,
+            "vol_ratio_mode": VOL_LABEL[args.vol_src],
             "elapsed_minutes": mins,
-            "vol_ratio_mode": vr_mode,
             "cache_last_date": cache_last,
             "sort": args.sort,
             "funnel": funnel,
@@ -474,9 +493,9 @@ def render(pick: dict) -> str:
 ④ 量比 &gt; {p.get("vol_min", 1.5):g}；
 ⑤ 股价在 MA50 上方，但不超过 {1 + p.get("ma50_ceil_pct", 30) / 100:.2g} 倍 MA50（防止追高偏离过大）；
 ⑥ 距 250 日新高 ≥ {p.get("dist_high_min", -15):g}%。<br>
-<b>量比口径</b>：{m.get("vol_ratio_mode")}。当前已交易 {m.get("elapsed_minutes")} 分钟，基准取 K 线缓存中
-计算日之前最近 5 个交易日均量（缓存末日 {m.get("cache_last_date") or "—"}）。
-用「当日累计量 ÷ 20 日均量」的全日口径在盘中会系统性偏低，故未采用。<br>
+<b>量比口径</b>：{m.get("vol_ratio_mode")}。当前已交易 {m.get("elapsed_minutes")} 分钟。
+对照：同样阈值下，分时归一化口径过线 {m.get("n_vol_intraday", "—")} 只，看板 vol_ratio20 口径过线 {m.get("n_vol_dashboard", "—")} 只
+（基准：量比前还剩 {m.get("n_before_vol", "—")} 只）。两者差距就是「盘中未做时间归一化」造成的偏差。<br>
 <b>剔除</b>：停牌股；涨停股（10 点无法买入）默认剔除，本期剔除 {m.get("n_limit_up_excluded", 0)} 只。<br>
 <b>盘中分（参考列，不参与筛选）</b>：当日涨幅 {w.get("chg")} + 量比 {w.get("vol")} + 距250日高点 {w.get("dist")} + 板块6月强度 {w.get("sector")}，各因子在入选池内取横截面百分位后加权，满分 100。<br>
 <b>大盘温度</b>：DPWD（TEMP10），≥85 进攻、75–85 中性、&lt;75 防御；既有策略在 TEMP10 &lt; 70 时应清仓观望，此处仅作参考。<br>
@@ -493,7 +512,9 @@ def main() -> None:
     ap.add_argument("--rps-min", type=float, default=85.0, help="综合 RPS 下限（严格大于）")
     ap.add_argument("--fip-max", type=float, default=0.0, help="FIP250 上限（小于等于）")
     ap.add_argument("--min-mcap", type=float, default=50.0, help="总市值下限（亿元，严格大于）")
-    ap.add_argument("--vol-min", type=float, default=1.5, help="量比下限（分时归一化口径，严格大于）")
+    ap.add_argument("--vol-min", type=float, default=1.5, help="量比下限（严格大于）")
+    ap.add_argument("--vol-src", default="intraday", choices=["intraday", "dashboard"],
+                    help="量比口径：intraday=分时归一化；dashboard=直接调看板 vol_ratio20")
     ap.add_argument("--ma50-ceil-pct", type=float, default=30.0, help="股价相对 MA50 的最大正偏离%%（对应 1.3 倍）")
     ap.add_argument("--dist-high-min", type=float, default=-15.0, help="距 250 日新高的最小百分比（≥）")
     ap.add_argument("--top", type=int, default=20, help="输出条数")
@@ -517,6 +538,9 @@ def main() -> None:
         print("  漏斗: " + " → ".join(f"{k}={v}" for k, v in m["funnel"]))
         print(f"  入选 {m['n_pool']} 只｜已交易 {m['elapsed_minutes']} 分钟"
               f"｜TEMP10 {(m.get('dpwd') or {}).get('TEMP10', '—')}")
+        print(f"  量比口径对照（阈值 {args.vol_min:g}，量比前 {m['n_before_vol']} 只）: "
+              f"分时归一化过线 {m['n_vol_intraday']} 只 ｜ 看板 vol_ratio20 过线 {m['n_vol_dashboard']} 只"
+              f"｜当前采用 {m['vol_src']}｜基准缓存末日 {m['cache_last_date'] or '读取失败'}")
         for c in pick["candidates"][:10]:
             print(f"  {c['rank']:>2}. {c['code']} {c['name']:<8} RPS{c['composite_rps']:.1f} "
                   f"量比{c['vol_ratio']} 涨幅{c['chg_pct']:+}% 距高{c['dist_high_250']}% "

@@ -1,14 +1,17 @@
 {
  "meta": {
-  "generated_at": "2026-09-04 08:28:01",
+  "generated_at": "2026-09-04 08:51:12",
   "asof": "2026-09-03",
-  "quote_time": "2026-09-03 15:21:39",
+  "quote_time": "2026-09-03 16:30:00",
   "universe": 5008,
   "n_pool": 4,
   "n_limit_up_excluded": 1,
   "n_before_vol": 37,
-  "elapsed_minutes": 240,
+  "n_vol_intraday": 5,
+  "n_vol_dashboard": 1,
+  "vol_src": "intraday",
   "vol_ratio_mode": "分时归一化（当日累计量/已交易分钟 ÷ 前5日均量/240）",
+  "elapsed_minutes": 240,
   "cache_last_date": "2026-08-31",
   "sort": "rps",
   "funnel": [
@@ -41,7 +44,7 @@
     37
    ],
    [
-    "量比 > 1.5",
+    "量比 > 1.5（intraday）",
     5
    ],
    [
@@ -91,6 +94,7 @@
    "close": 25.6,
    "chg_pct": 5.35,
    "vol_ratio": 1.56,
+   "vol_ratio_intraday": 1.56,
    "vol_ratio20": 1.51,
    "amount_yi": 5.49,
    "dist_high_250": -2.14,
@@ -120,6 +124,7 @@
    "close": 34.45,
    "chg_pct": 6.16,
    "vol_ratio": 2.15,
+   "vol_ratio_intraday": 2.15,
    "vol_ratio20": 1.46,
    "amount_yi": 3.23,
    "dist_high_250": 1.68,
@@ -149,6 +154,7 @@
    "close": 14.73,
    "chg_pct": 6.66,
    "vol_ratio": 1.59,
+   "vol_ratio_intraday": 1.59,
    "vol_ratio20": 1.27,
    "amount_yi": 8.79,
    "dist_high_250": -1.47,
@@ -178,6 +184,7 @@
    "close": 86.35,
    "chg_pct": 0.77,
    "vol_ratio": 1.81,
+   "vol_ratio_intraday": 1.81,
    "vol_ratio20": 1.31,
    "amount_yi": 96.17,
    "dist_high_250": -10.4,
