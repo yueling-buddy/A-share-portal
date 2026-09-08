@@ -66,6 +66,7 @@ RPS_JSON = DATA_DIR / "rps.json"
 HISTORY_JSON = DATA_DIR / "history.json"                     # 个股 K 线（OHLC+MA），按需懒加载，不进 rps.json（rps.json 因此从 ~33MB 降到 ~4MB）
 FIP_JSON = DATA_DIR / "fip.json"
 META_JSON = DATA_DIR / "meta.json"
+AUCTION_JSON = DATA_DIR / "auction.json"   # 集合竞价快照（9:25 撮合）；供详情/面板读取，不进 rps.json 记录（避免被 intraday compute_all 重建冲掉）
 SECTOR_JSON = DATA_DIR / "sector_rps.json"
 SECTOR_HISTORY_JSON = DATA_DIR / "sector_rps_history.json"   # 板块 RPS 逐日快照（供历史排名走势图）
 RUN_LOG_JSON = DATA_DIR / "cloud_run_log.json"               # 运行诊断（云端可观测：行情源/行数/asof/守卫）
@@ -1118,9 +1119,102 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
         log_err("index.template.html 缺失，未生成 index.html")
 
 
+
+
+
+def run_auction() -> bool:
+    """9:25 集合竞价撮合完成 → 抓一次'今开'作 auction_price、'涨跌幅'作 auction_pct。
+
+    设计要点：
+      - 独立写 data/auction.json（不被 intraday 的 compute_all 重建冲掉）。
+      - 同时把每个 record 的 pct_change 临时写成 auction_pct，让看板"涨跌幅%"列在
+        9:25-9:30 之间直接显示竞价 gap；9:30 intraday 会自然用实时行情覆盖。
+      - 不动日线 bar（不注入 today_bar），不重算 RPS/FIP。
+      - 时间窗守卫 9:20-9:29：避免手工误触发。
+    """
+    now_bj = datetime.now(BJ)
+    hm = now_bj.time()
+    if not (dtime(9, 20) <= hm <= dtime(9, 29, 30)):
+        print(f"[auction] 当前 {hm.strftime('%H:%M:%S')} 不在 9:20-9:29 竞价窗，跳过")
+        write_run_log(mode="auction", stage="skip_window", note=f"current time {hm} not in auction window")
+        return True
+    if not RPS_JSON.exists():
+        log_err(f"未找到 {RPS_JSON}，请先跑一次完整刷新（intraday/close/full）")
+        return False
+    try:
+        payload = json.loads(RPS_JSON.read_text(encoding="utf-8"))
+        records = payload.get("data", [])
+    except Exception as e:
+        log_err(f"读 rps.json 失败: {repr(e)[:200]}")
+        return False
+
+    print("== 抓集合竞价撮合价（9:25） ==")
+    spot = fetch_spot([r["code"] for r in records])
+    write_run_log(mode="auction", stage="spot_done", n_codes=len(records))
+    if spot is None or spot.empty:
+        log_err("auction: 实时行情拉取失败，跳过")
+        return False
+    print(f"auction spot: {len(spot)} 只")
+
+    # 9:25 撮合后：今开 = 撮合价；涨跌幅 = (撮合价/昨收-1) = 竞价 gap
+    auction_rows = []
+    n_set = 0
+    by_code = {str(r["code"]).zfill(6): r for _, r in spot.iterrows()}
+    for rec in records:
+        c = rec["code"]
+        sr = by_code.get(c)
+        if sr is None:
+            continue
+        try:
+            ap = sr.get("今开")
+            pct = sr.get("涨跌幅")
+            ap_v = float(ap) if pd.notna(ap) and float(ap) > 0 else None
+            pct_v = float(pct) if pd.notna(pct) and np.isfinite(float(pct)) else None
+        except Exception:
+            ap_v = pct_v = None
+        if ap_v is not None:
+            rec["auction_price"] = round(ap_v, 4)
+            auction_rows.append({"code": c, "auction_price": round(ap_v, 4), "auction_pct": (round(pct_v, 4) if pct_v is not None else None)})
+            # 关键：临时把 pct_change 写成竞价 gap，让 9:25-9:30 期间看板"涨跌幅%"列直接显示
+            if pct_v is not None:
+                rec["pct_change"] = round(pct_v, 4)
+            n_set += 1
+
+    today = now_bj.date().isoformat()
+    out = {
+        "meta": {
+            "asof": today,
+            "quote_time": LAST_QUOTE_TIME.get("ts"),
+            "captured_at": now_bj.strftime("%Y-%m-%d %H:%M:%S"),
+            "count": len(auction_rows),
+            "source": "新浪实时行情（9:25 集合竞价撮合）",
+            "note": "auction_price=今开（撮合价）；auction_pct=(撮合价/昨收-1)*100。不进日线 bar，不参与 RPS。",
+        },
+        "data": auction_rows,
+    }
+    AUCTION_JSON.write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    # rps.json: 只回写（records 已被原地修改 pct_change/auction_price）
+    payload["meta"]["auction_quote_time"] = LAST_QUOTE_TIME.get("ts")
+    payload["meta"]["auction_capture_at"] = now_bj.strftime("%Y-%m-%d %H:%M:%S")
+    RPS_JSON.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    # 同步 meta.json 顶层（看板可能读这个），保持轻量
+    try:
+        if META_JSON.exists():
+            mm = json.loads(META_JSON.read_text(encoding="utf-8"))
+            mm["auction_quote_time"] = LAST_QUOTE_TIME.get("ts")
+            mm["auction_capture_at"] = now_bj.strftime("%Y-%m-%d %H:%M:%S")
+            META_JSON.write_text(json.dumps(mm, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        log_err(f"meta.json 回写失败（不影响主流程）: {repr(e)[:160]}")
+    print(f"auction 写入 {AUCTION_JSON.name}: {len(auction_rows)} 只，pct_change 覆盖 {n_set} 只")
+    write_run_log(mode="auction", stage="written", n_records=len(records), n_auction=len(auction_rows), n_pct_overwrite=n_set)
+    return True
+
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["bootstrap", "intraday", "close", "full", "sector-only", "backfill"],
+    ap.add_argument("--mode", choices=["bootstrap", "intraday", "close", "full", "sector-only", "backfill", "auction"],
                     default="intraday")
     ap.add_argument("--seed-local", action="store_true", help="bootstrap 时从本机 rps_fip kline 整合（秒级）")
     ap.add_argument("--limit", type=int, default=None, help="仅处理前 N 只（冒烟测试用）")
@@ -1154,6 +1248,10 @@ def main():
             log_err(f"sector-only 失败: {repr(e)[:200]}")
             sys.exit(1)
         sys.exit(0)
+
+    # auction: 抓 9:25 集合竞价撮合价（独立文件 + 临时覆盖 pct_change）
+    if args.mode == "auction":
+        sys.exit(0 if run_auction() else 1)
 
     print(f"== 模式: {args.mode} ==")
     industry_map, mcap_csv, watch_codes, watch_names = load_meta()

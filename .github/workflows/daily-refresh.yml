@@ -10,13 +10,15 @@ on:
   # 推送到 main 时立即刷新一次（cron 停摆时用于补数据；bot 自身的 push 不会递归触发）
   push:
     branches: [main]
-  # 定时刷新时间表（北京时间，周一至周五）：
-  #   09:00-11:45 每 15 分钟 / 09:32 开盘后硬刷新 / 13:00-14:45 每 15 分钟 / 15:10 收盘定稿
+  # 定时刷新时间表（北京时间，周一至周五，2026-09-08 调整）：
+  #   09:00 / 09:15 取消（盘前守卫丢弃，刷新无意义）
+  #   09:25 集合竞价撮合 → 抓 auction_price/auction_pct（独立写 data/auction.json，并临时覆盖 rps.json pct_change）
+  #   09:30-11:45 每 15 分钟 / 09:32 开盘后硬刷新 / 13:00-14:45 每 15 分钟 / 15:10 收盘定稿
   # 2026-09-03：GitHub cron 调度队列停止触发（10:19 后不再自动跑），改为显式 cron 条目重新注册 schedule。
   schedule:
-    # 上午 09:00-11:45（UTC 01:00-03:45）
-    - cron: "0 1 * * 1-5"
-    - cron: "15 1 * * 1-5"
+    # 上午 09:30-11:45（UTC 01:30-03:45；9:00/9:15 已取消，见上方注释）
+    # 09:25 集合竞价撮合 → 抓 auction
+    - cron: "25 1 * * 1-5"
     - cron: "30 1 * * 1-5"
     - cron: "45 1 * * 1-5"
     - cron: "0 2 * * 1-5"
@@ -84,7 +86,9 @@ jobs:
             export TZ=Asia/Shanghai
             H=$(date +%H)
             M=$(date +%M)
-            if [ "$H" = "15" ] && [ "$M" -le 30 ]; then
+            if [ "$H" = "09" ] && [ "$M" -ge 20 ] && [ "$M" -lt 30 ]; then
+              MODE=auction
+            elif [ "$H" = "15" ] && [ "$M" -le 30 ]; then
               MODE=close
             else
               MODE=intraday
@@ -100,6 +104,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add index.html data/rps.json data/history.json data/fip.json data/meta.json data/sector_rps.json data/sector_rps_history.json data/cloud_run_log.json
+          git add index.html data/rps.json data/history.json data/fip.json data/meta.json data/auction.json data/sector_rps.json data/sector_rps_history.json data/cloud_run_log.json
           git commit -m "auto: ${{ steps.mode.outputs.mode }} refresh $(TZ=Asia/Shanghai date +%F_%H:%M)" || echo "No changes to commit"
           git push
