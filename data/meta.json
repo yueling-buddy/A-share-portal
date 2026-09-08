@@ -1,9 +1,9 @@
 {
-  "asof": "2026-09-07",
-  "generated_at": "2026-09-08 09:28:21",
-  "quote_time": "2026-09-08 09:27:30",
+  "asof": "2026-09-08",
+  "generated_at": "2026-09-08 09:36:13",
+  "quote_time": "2026-09-08 09:35:12",
   "count": 5007,
-  "universe_count": 5014,
+  "universe_count": 5013,
   "source": "新浪实时行情 + 本地 300 日缓存（无未来函数）",
   "stock_pool_note": "股票池严格以 data/codes.csv 为准，有效横截面为成功计算的 5007 只；同时按当日实时证券简称动态剔除 ST、*ST、S*ST 与退市整理期股票。",
   "market_cap_note": "总市值主用 data/mcap.csv 快照（盘中实时市值未增强）。",
