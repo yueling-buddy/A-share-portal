@@ -104,6 +104,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add index.html data/rps.json data/history.json data/fip.json data/meta.json data/auction.json data/sector_rps.json data/sector_rps_history.json data/cloud_run_log.json
-          git commit -m "auto: ${{ steps.mode.outputs.mode }} refresh $(TZ=Asia/Shanghai date +%F_%H:%M)" || echo "No changes to commit"
-          git push
+          # 主数据文件：每次必 add
+          git add index.html data/rps.json data/history.json data/fip.json data/meta.json data/sector_rps.json data/sector_rps_history.json data/cloud_run_log.json
+          # 竞价文件：只有 9:25 auction 模式才生成；intraday/close 模式 checkout 时可能还不存在，用 || true 容错
+          git add data/auction.json 2>/dev/null || true
+          # 无改动时跳过 commit + push（避免 cron 空转占 token 配额 + 误导失败信号）
+          if git diff --cached --quiet; then
+            echo "No changes to commit, skipping push"
+          else
+            git commit -m "auto: ${{ steps.mode.outputs.mode }} refresh $(TZ=Asia/Shanghai date +%F_%H:%M)"
+            git push
+          fi
