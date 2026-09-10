@@ -12,12 +12,12 @@ on:
     branches: [main]
   # 定时刷新时间表（北京时间，周一至周五，2026-09-08 调整）：
   #   09:00 / 09:15 取消（盘前守卫丢弃，刷新无意义）
-  #   09:25 集合竞价撮合 → 抓 auction_price/auction_pct（独立写 data/auction.json，并临时覆盖 rps.json pct_change）
+  #   09:20-9:45 竞价窗口 → 抓 auction（放宽以覆盖 GitHub cron 漂移）_price/auction_pct（独立写 data/auction.json，并临时覆盖 rps.json pct_change）
   #   09:30-11:45 每 15 分钟 / 09:32 开盘后硬刷新 / 13:00-14:45 每 15 分钟 / 15:10 收盘定稿
   # 2026-09-03：GitHub cron 调度队列停止触发（10:19 后不再自动跑），改为显式 cron 条目重新注册 schedule。
   schedule:
     # 上午 09:30-11:45（UTC 01:30-03:45；9:00/9:15 已取消，见上方注释）
-    # 09:25 集合竞价撮合 → 抓 auction
+    # 09:20-9:45 竞价窗口 → 抓 auction（放宽以覆盖 GitHub cron 漂移）
     - cron: "25 1 * * 1-5"
     - cron: "30 1 * * 1-5"
     - cron: "45 1 * * 1-5"
@@ -86,7 +86,7 @@ jobs:
             export TZ=Asia/Shanghai
             H=$(date +%H)
             M=$(date +%M)
-            if [ "$H" = "09" ] && [ "$M" -ge 20 ] && [ "$M" -lt 30 ]; then
+            if [ "$H" = "09" ] && [ "$M" -ge 20 ] && [ "$M" -lt 45 ]; then
               MODE=auction
             elif [ "$H" = "15" ] && [ "$M" -le 30 ]; then
               MODE=close

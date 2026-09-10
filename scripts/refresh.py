@@ -1130,11 +1130,11 @@ def run_auction() -> bool:
       - 同时把每个 record 的 pct_change 临时写成 auction_pct，让看板"涨跌幅%"列在
         9:25-9:30 之间直接显示竞价 gap；9:30 intraday 会自然用实时行情覆盖。
       - 不动日线 bar（不注入 today_bar），不重算 RPS/FIP。
-      - 时间窗守卫 9:20-9:29：避免手工误触发。
+      - 时间窗守卫 9:20-9:45：覆盖 GitHub cron 漂移（9:25 档常漂到 9:30+）。
     """
     now_bj = datetime.now(BJ)
     hm = now_bj.time()
-    if not (dtime(9, 20) <= hm <= dtime(9, 29, 30)):
+    if not (dtime(9, 20) <= hm < dtime(9, 45)):
         print(f"[auction] 当前 {hm.strftime('%H:%M:%S')} 不在 9:20-9:29 竞价窗，跳过")
         write_run_log(mode="auction", stage="skip_window", note=f"current time {hm} not in auction window")
         return True
