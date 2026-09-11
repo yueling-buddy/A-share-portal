@@ -12,6 +12,6 @@
     "composite_rps": "0.3×RPS50 + 0.3×RPS120 + 0.4×RPS250",
     "fip": "sign(N日收益) × (下跌日数−上涨日数) / N"
   },
-  "auction_quote_time": "2026-09-11 09:34:16",
-  "auction_capture_at": "2026-09-11 09:34:07"
+  "auction_quote_time": "2026-09-11 09:39:36",
+  "auction_capture_at": "2026-09-11 09:39:25"
 }
