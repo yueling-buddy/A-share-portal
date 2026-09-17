@@ -1,17 +1,17 @@
 {
-  "ts": "2026-09-16 20:35:05",
+  "ts": "2026-09-17 10:48:44",
   "host": "cloud",
   "spot_attempts": [
     {
       "src": "sina_raw",
-      "rows": 5010
+      "rows": 5011
     }
   ],
   "spot_source": "sina_raw",
-  "spot_rows": 5010,
+  "spot_rows": 5011,
   "mode": "intraday",
   "stage": "written",
-  "asof": "2026-09-16",
+  "asof": "2026-09-17",
   "guard_skipped": false,
-  "n_records": 5008
+  "n_records": 5009
 }
