@@ -1,5 +1,5 @@
 {
-  "ts": "2026-09-17 20:35:20",
+  "ts": "2026-09-18 10:50:49",
   "host": "cloud",
   "spot_attempts": [
     {
@@ -11,7 +11,7 @@
   "spot_rows": 5011,
   "mode": "intraday",
   "stage": "written",
-  "asof": "2026-09-17",
+  "asof": "2026-09-18",
   "guard_skipped": false,
   "n_records": 5009
 }
