@@ -585,6 +585,7 @@ def write_sector(records, asof, source_desc):
         except Exception as e:
             log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，历史排名置空: {repr(e)[:160]}")
             hist = {}
+    hist = _normalize_hist(hist)   # 归一为每周 1 条，否则「1周前/3月前」前值会被同周邻日抹平
     for r in records:
         ind = r.get("industry")
         r["rank1m_1w_ago"] = _lookup_hist_rank1m(hist, ind, asof, 1)
@@ -618,21 +619,88 @@ def write_sector(records, asof, source_desc):
     print(f"已生成 {SECTOR_JSON}（{len(records)} 个行业）")
 
 
-def write_sector_history(records, asof, existing_hist=None):
-    """把板块 1M 排名的「周频」快照追加进历史文件。
+def _iso_week_key(d):
+    """返回 ISO 周标识 (iso_year, iso_week)；解析失败返回 None。"""
+    try:
+        t = pd.Timestamp(d).normalize()
+    except Exception:
+        return None
+    iso = t.isocalendar()
+    return (int(iso[0]), int(iso[1]))
 
-    - 仅在 asof 为该周最后一个交易日（周频记录点）时才写入，避免重复；
-      因此每个自然周最终只保留 1 个最新点（收盘定稿覆盖）。
-    - 每个周点记录每个行业的：1M 排名 / 1M 强度 / 1M 市值加权涨幅 / 成分股数。
-    - 仅保留最近 MAX_HISTORY_WEEKS 个周，避免无限膨胀。
+
+def _normalize_hist(hist):
+    """把历史快照归一为「每个 ISO 周恰好 1 条」（保留该周内最新日期）。
+
+    历史遗留的重复条目（同一周被写了多个交易日）会让「1周前 / 3月前」的前值查询
+    退化成取到同一周内的相邻日，排名变化被抹平。这里统一收敛掉。
+    """
+    if not hist:
+        return {}
+    best = {}
+    for k in list(hist.keys()):
+        wk = _iso_week_key(k)
+        if wk is None:
+            continue
+        cur = best.get(wk)
+        if cur is None or pd.Timestamp(k).normalize() > pd.Timestamp(cur).normalize():
+            best[wk] = k
+    return {k: hist[k] for k in best.values()}
+
+
+def _atomic_write_json(path, obj):
+    """原子写 JSON：先写 .tmp 再 os.replace，避免中途异常留下截断文件。"""
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_sector_history(records, asof, existing_hist=None):
+    """把板块 1M 排名的「周频」快照写入历史文件（每个 ISO 周恰好 1 条）。
+
+    2026-09-18 重写，修两个老问题：
+    1) 静默冻结：原实现用 week_end_trading_date()（读 K 线缓存日期集合）判断
+       「asof 是否本周最后一个交易日」。缓存尚不含当日时该判断失败
+       （asof != week_end）→ 直接 return，周五快照永远写不进去。
+       现改为「按 ISO 周归一 + 周内最新日期覆盖」，完全不依赖缓存完整性。
+    2) 重复周：周内多日都被写进去（缓存缺日时更严重）。现每次写入前先全局归一，
+       每周只留最新一条，彻底消除重复。
+    - 同周已有更新的日期（如先回补了历史日历）→ 不回退。
+    - 原子写：先写 .tmp 再 os.replace。
     """
     if not records:
         return
     asof_ts = pd.Timestamp(asof).normalize()
-    wk = week_end_trading_date(asof)
-    if asof_ts != wk:
-        return  # 非周频记录点（周内普通交易日），跳过
-    wk_str = wk.strftime("%Y-%m-%d")
+    asof_key = asof_ts.strftime("%Y-%m-%d")
+    asof_week = _iso_week_key(asof_ts)
+
+    if existing_hist is not None:
+        hist = dict(existing_hist)
+    else:
+        hist = {}
+        if SECTOR_HISTORY_JSON.exists():
+            try:
+                hist = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
+            except Exception as e:
+                log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，重建: {repr(e)[:160]}")
+                hist = {}
+
+    # 1) 全局归一：每个 ISO 周只保留最新日期
+    before = len(hist)
+    hist = _normalize_hist(hist)
+    if before != len(hist):
+        print(f"板块周频历史：归一去除 {before - len(hist)} 条同周重复（{before} -> {len(hist)} 周）")
+
+    cur_key = None
+    for k in hist.keys():
+        if _iso_week_key(k) == asof_week:
+            cur_key = k
+            break
+    if cur_key is not None and pd.Timestamp(cur_key).normalize() > asof_ts:
+        _atomic_write_json(SECTOR_HISTORY_JSON, hist)
+        print(f"板块周频历史：本周已有更新日期 {cur_key} > {asof_key}，跳过覆盖（已落盘归一结果）")
+        return
+
     today = {}
     for r in records:
         ind = r.get("industry")
@@ -644,26 +712,17 @@ def write_sector_history(records, asof, existing_hist=None):
             "ret1m_cw": r.get("ret1m_cw"),
             "n_stocks": r.get("n_stocks"),
         }
-    if existing_hist is not None:
-        hist = existing_hist
-    else:
-        hist = {}
-        if SECTOR_HISTORY_JSON.exists():
-            try:
-                hist = json.loads(SECTOR_HISTORY_JSON.read_text(encoding="utf-8"))
-            except Exception as e:
-                log_err(f"读取 {SECTOR_HISTORY_JSON.name} 失败，重建: {repr(e)[:160]}")
-                hist = {}
-    hist[wk_str] = today
+    if cur_key is not None:
+        hist.pop(cur_key, None)
+    hist[asof_key] = today
+
     keys = sorted(hist.keys())
     if len(keys) > MAX_HISTORY_WEEKS:
         for k in keys[:-MAX_HISTORY_WEEKS]:
             hist.pop(k, None)
-    SECTOR_HISTORY_JSON.write_text(
-        json.dumps(hist, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    print(f"已写入板块周频历史快照 {SECTOR_HISTORY_JSON.name}（周 {wk_str}，共 {len(hist)} 周）")
+
+    _atomic_write_json(SECTOR_HISTORY_JSON, hist)
+    print(f"已写入板块周频历史快照 {SECTOR_HISTORY_JSON.name}（周 {asof_key}，共 {len(hist)} 周）")
 
 
 # ---------------- 数据获取 ----------------
@@ -1127,7 +1186,7 @@ def run_auction() -> bool:
 
     设计要点：
       - 独立写 data/auction.json（不被 intraday 的 compute_all 重建冲掉）。
-      - 同时把每个 record 的 pct_change 临时写成 auction_pct，让看板"涨跌幅%"列在
+      - 同时把每个 record 的 chg_pct 临时写成竞价 gap（并留 auction_pct），让看板"涨跌幅%"列在
         9:25-9:30 之间直接显示竞价 gap；9:30 intraday 会自然用实时行情覆盖。
       - 不动日线 bar（不注入 today_bar），不重算 RPS/FIP。
       - 时间窗守卫 9:20-9:45：覆盖 GitHub cron 漂移（9:25 档常漂到 9:30+）。
@@ -1135,7 +1194,7 @@ def run_auction() -> bool:
     now_bj = datetime.now(BJ)
     hm = now_bj.time()
     if not (dtime(9, 20) <= hm < dtime(9, 45)):
-        print(f"[auction] 当前 {hm.strftime('%H:%M:%S')} 不在 9:20-9:29 竞价窗，跳过")
+        print(f"[auction] 当前 {hm.strftime('%H:%M:%S')} 不在 9:20-9:45 竞价窗，跳过")
         write_run_log(mode="auction", stage="skip_window", note=f"current time {hm} not in auction window")
         return True
     if not RPS_JSON.exists():
@@ -1175,9 +1234,12 @@ def run_auction() -> bool:
         if ap_v is not None:
             rec["auction_price"] = round(ap_v, 4)
             auction_rows.append({"code": c, "auction_price": round(ap_v, 4), "auction_pct": (round(pct_v, 4) if pct_v is not None else None)})
-            # 关键：临时把 pct_change 写成竞价 gap，让 9:25-9:30 期间看板"涨跌幅%"列直接显示
+            # 关键：临时把 chg_pct 写成竞价 gap，让 9:25-9:30 期间看板"涨跌幅%"列直接显示
+            # 注意：看板列定义是 ['chg_pct','涨跌幅%']（见 index.html buildHead），
+            # 此前误写 rec["pct_change"] 导致竞价 gap 从未真正显示过。
             if pct_v is not None:
-                rec["pct_change"] = round(pct_v, 4)
+                rec["chg_pct"] = round(pct_v, 4)
+                rec["auction_pct"] = round(pct_v, 4)
             n_set += 1
 
     today = now_bj.date().isoformat()
@@ -1196,6 +1258,9 @@ def run_auction() -> bool:
     # rps.json: 只回写（records 已被原地修改 pct_change/auction_price）
     payload["meta"]["auction_quote_time"] = LAST_QUOTE_TIME.get("ts")
     payload["meta"]["auction_capture_at"] = now_bj.strftime("%Y-%m-%d %H:%M:%S")
+    # bump generated_at：看板用 meta.json 的 generated_at 作 cache-busting 版本号，
+    # 不 bump 的话浏览器会继续用缓存里的旧 rps.json，竞价 gap 根本显示不出来。
+    payload["meta"]["generated_at"] = now_bj.strftime("%Y-%m-%d %H:%M:%S")
     RPS_JSON.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     # 同步 meta.json 顶层（看板可能读这个），保持轻量
     try:
@@ -1203,10 +1268,11 @@ def run_auction() -> bool:
             mm = json.loads(META_JSON.read_text(encoding="utf-8"))
             mm["auction_quote_time"] = LAST_QUOTE_TIME.get("ts")
             mm["auction_capture_at"] = now_bj.strftime("%Y-%m-%d %H:%M:%S")
+            mm["generated_at"] = now_bj.strftime("%Y-%m-%d %H:%M:%S")
             META_JSON.write_text(json.dumps(mm, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         log_err(f"meta.json 回写失败（不影响主流程）: {repr(e)[:160]}")
-    print(f"auction 写入 {AUCTION_JSON.name}: {len(auction_rows)} 只，pct_change 覆盖 {n_set} 只")
+    print(f"auction 写入 {AUCTION_JSON.name}: {len(auction_rows)} 只，chg_pct 覆盖 {n_set} 只")
     write_run_log(mode="auction", stage="written", n_records=len(records), n_auction=len(auction_rows), n_pct_overwrite=n_set)
     return True
 

@@ -159,7 +159,7 @@ Promise.all([fetch('data/meta.json?_='+Date.now()).then(r=>r.json()).catch(()=>(
 }).then(([RPS,FIP,S,H])=>{
   META=RPS.meta;DATA=RPS.data;rows=DATA.slice();
   const _qt=META.quote_time||'—';
-  $('hdrTime').textContent=`行情截至 ${META.asof} ｜ 行情时间 ${_qt} ｜ 生成时间 ${META.generated_at||'—'}`;
+  $('hdrTime').textContent=`行情截至 ${META.asof} ｜ 行情时间 ${_qt} ｜ 生成时间 ${META.generated_at||'—'}`+(META.auction_capture_at?` ｜ 竞价快照 ${String(META.auction_capture_at).slice(11,16)}`:'');
   $('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}｜行情时间 ${_qt}`;
   $('note').innerHTML=`数据源：${META.source}，截至 ${META.asof}；${META.stock_pool_note}；${META.market_cap_note}。<b>FIP 的正负必须结合区间收益方向理解。</b>`;
   buildHead();computeKpis();apply();

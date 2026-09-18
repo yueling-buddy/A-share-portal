@@ -43,7 +43,7 @@ td.rankcell{text-align:center;font-variant-numeric:tabular-nums}
 </head>
 <body>
 <div class="shell">
-  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p><span id="hdrTime">行情截至 2026-09-18 ｜ 行情时间 2026-09-18 16:30:00 ｜ 生成时间 2026-09-18 20:13:40</span> ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
+  <div class="head"><div class="title"><h1>A股动量选股盘 <span class="tag">自动更新版</span></h1><p><span id="hdrTime">行情截至 2026-09-18 ｜ 行情时间 2026-09-18 15:31:19 ｜ 生成时间 2026-09-18 15:35:23</span> ｜ A股习惯：红涨绿跌 ｜ 点击股票名称查看详情</p></div><div class="head-actions"><button class="btn" onclick="openManual()">指标说明</button><button class="btn primary" onclick="location.reload()">重新载入</button></div></div>
   <div class="tabs">
     <button class="tab active" data-view="stock">个股动量</button>
     <button class="tab" data-view="sector">板块RPS</button>
@@ -159,7 +159,7 @@ Promise.all([fetch('data/meta.json?_='+Date.now()).then(r=>r.json()).catch(()=>(
 }).then(([RPS,FIP,S,H])=>{
   META=RPS.meta;DATA=RPS.data;rows=DATA.slice();
   const _qt=META.quote_time||'—';
-  $('hdrTime').textContent=`行情截至 ${META.asof} ｜ 行情时间 ${_qt} ｜ 生成时间 ${META.generated_at||'—'}`;
+  $('hdrTime').textContent=`行情截至 ${META.asof} ｜ 行情时间 ${_qt} ｜ 生成时间 ${META.generated_at||'—'}`+(META.auction_capture_at?` ｜ 竞价快照 ${String(META.auction_capture_at).slice(11,16)}`:'');
   $('dataStatus').textContent=`${META.count.toLocaleString()}只｜截至 ${META.asof}｜行情时间 ${_qt}`;
   $('note').innerHTML=`数据源：${META.source}，截至 ${META.asof}；${META.stock_pool_note}；${META.market_cap_note}。<b>FIP 的正负必须结合区间收益方向理解。</b>`;
   buildHead();computeKpis();apply();
