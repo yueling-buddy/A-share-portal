@@ -1181,7 +1181,7 @@ def write_outputs(records, asof, source_desc, universe_count, spot_enhanced):
 
 
 
-def run_auction() -> bool:
+def run_auction(force: bool = False) -> bool:
     """9:25 集合竞价撮合完成 → 抓一次'今开'作 auction_price、'涨跌幅'作 auction_pct。
 
     设计要点：
@@ -1190,10 +1190,11 @@ def run_auction() -> bool:
         9:25-9:30 之间直接显示竞价 gap；9:30 intraday 会自然用实时行情覆盖。
       - 不动日线 bar（不注入 today_bar），不重算 RPS/FIP。
       - 时间窗守卫 9:20-9:45：覆盖 GitHub cron 漂移（9:25 档常漂到 9:30+）。
+      - force=True 时忽略时间窗（口径仍取「今开」= 当日撮合价，盘中/盘后补抓同样有效）。
     """
     now_bj = datetime.now(BJ)
     hm = now_bj.time()
-    if not (dtime(9, 20) <= hm < dtime(9, 45)):
+    if not force and not (dtime(9, 20) <= hm < dtime(9, 45)):
         print(f"[auction] 当前 {hm.strftime('%H:%M:%S')} 不在 9:20-9:45 竞价窗，跳过")
         write_run_log(mode="auction", stage="skip_window", note=f"current time {hm} not in auction window")
         return True
@@ -1286,6 +1287,7 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="仅处理前 N 只（冒烟测试用）")
     ap.add_argument("--days", type=int, default=5, help="backfill：回补最近 N 个交易日的日线")
     ap.add_argument("--workers", type=int, default=8, help="backfill：并发线程数（过高会被接口掐连接）")
+    ap.add_argument("--force", action="store_true", help="auction：忽略 9:20-9:45 时间窗，手工补抓竞价")
     args = ap.parse_args()
 
     # close 模式会写回缓存，必须基于全量 frame，禁止 --limit 截断
@@ -1317,7 +1319,7 @@ def main():
 
     # auction: 抓 9:25 集合竞价撮合价（独立文件 + 临时覆盖 pct_change）
     if args.mode == "auction":
-        sys.exit(0 if run_auction() else 1)
+        sys.exit(0 if run_auction(getattr(args, "force", False)) else 1)
 
     print(f"== 模式: {args.mode} ==")
     industry_map, mcap_csv, watch_codes, watch_names = load_meta()
