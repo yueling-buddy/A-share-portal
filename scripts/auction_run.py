@@ -116,7 +116,8 @@ def align_to_remote() -> None:
     rc = sh(["git", "fetch", HTTPS_URL, BRANCH])
     if rc != 0:
         raise SystemExit("git fetch 失败")
-    sh(["git", "remote", "set-url", "origin", HTTPS_URL])
+    # 注意：**不要** set-url origin（会把 origin 改成 HTTPS，之后 `git push origin` 会
+    # 挂死在凭据助手；本脚本一律推显式 SSH URL，见 push()）。
     rc = sh(["git", "reset", "--hard", "FETCH_HEAD"])
     if rc != 0:
         raise SystemExit("git reset --hard FETCH_HEAD 失败")
