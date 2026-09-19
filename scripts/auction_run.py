@@ -184,7 +184,8 @@ def main() -> None:
     for attempt in (1, 2):
         print(f"\n===== 第 {attempt} 轮 =====", flush=True)
         align_to_remote()
-        rc = run_auction_mode(args.force)
+        # 第 2 轮重试时可能已过 9:45 窗口，但「今开」字段全天不变，带 force 安全补抓
+        rc = run_auction_mode(args.force or attempt > 1)
         if rc != 0:
             raise SystemExit(f"auction 模式失败（rc={rc}）")
         if not stage_and_commit():

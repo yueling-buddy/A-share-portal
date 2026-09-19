@@ -1243,6 +1243,10 @@ def run_auction(force: bool = False) -> bool:
                 rec["auction_pct"] = round(pct_v, 4)
             n_set += 1
 
+    if not auction_rows:
+        print("[auction] 未取到有效撮合价（非交易日或未到 9:25），跳过写盘")
+        write_run_log(mode="auction", stage="skip_empty", n_codes=len(records))
+        return True
     today = now_bj.date().isoformat()
     out = {
         "meta": {
